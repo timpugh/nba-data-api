@@ -1,0 +1,243 @@
+[project]
+name = "hello-world"
+version = "1.0.1"
+description = "Production-grade AWS CDK reference architecture for Lambda + Powertools serverless applications, with multi-rule-pack cdk-nag, WAF, CloudTrail data events, CMK encryption end-to-end, and supply-chain hygiene."
+requires-python = ">=3.13"
+readme = "README.md"
+license = "Apache-2.0"
+# No runtime dependencies at the project level — see [dependency-groups] below.
+# The project splits into two resolution environments because CDK and Powertools
+# require incompatible `attrs` versions (CDK pulls attrs<26 via jsii, Powertools
+# pulls attrs>=26). [tool.uv.conflicts] below declares the `lambda` and `cdk`
+# groups as mutually exclusive so uv locks both resolutions in one uv.lock.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/timpugh/lambda-powertools-reference"
+Issues = "https://github.com/timpugh/lambda-powertools-reference/issues"
+
+# =============================================================================
+# Dependency groups (PEP 735) — resolved together by `uv lock`, installed
+# selectively with `uv sync --group <name>`. The `lambda` and `cdk` groups
+# are declared as conflicts in [tool.uv] and must never be installed into
+# the same venv.
+# =============================================================================
+[dependency-groups]
+# Lambda runtime — ships in the deployment bundle AND is installed locally
+# for unit tests that import `lambda/app.py`.
+lambda = [
+    "aws-lambda-powertools[all]==3.29.0",
+    "aws-xray-sdk==2.15.0",
+    "boto3==1.43.2",
+]
+
+# CDK infrastructure — used by `app.py`, `hello_world/`, and the CDK stack
+# assertion tests. Conflicts with `lambda` at the `attrs` pin (CDK requires
+# attrs<26 via jsii; Powertools requires attrs>=26).
+cdk = [
+    "aws-cdk-lib==2.248.0",
+    "constructs==10.6.0",
+    "aws-cdk-aws-lambda-python-alpha==2.248.0a0",
+    "cdk-monitoring-constructs==9.22.2",
+    "cdk-nag==2.37.55",
+]
+
+# Test runner — environment-agnostic; pairs with either `lambda` (unit tests,
+# integration tests) or `cdk` (stack assertion tests).
+test = [
+    "pytest==9.0.3",
+    "pytest-env==1.6.0",
+    "pytest-cov==7.1.0",
+    "pytest-xdist==3.8.0",
+    "pytest-mock==3.15.1",
+    "pytest-html==4.2.0",
+    "pytest-timeout==2.4.0",
+    "pytest-randomly==4.1.0",
+    "requests==2.33.1",
+]
+
+# Linting / static analysis / supply-chain checks — environment-agnostic.
+lint = [
+    "radon==6.0.1",
+    "xenon==0.9.3",
+    "mypy==1.20.2",
+    "ruff==0.15.12",
+    "pylint==4.0.5",
+    "bandit==1.9.4",
+    "pip-audit==2.10.0",
+    "pre-commit==4.6.0",
+    "boto3-stubs==1.43.5",
+]
+
+# Documentation build — used only by `make docs`. The Zensical static site
+# generator is pre-1.0, so versions are pinned exactly.
+docs = [
+    "zensical==0.0.40",
+    "mkdocstrings==1.0.4",
+    "mkdocstrings-python==2.0.3",
+]
+
+# =============================================================================
+# uv configuration
+# =============================================================================
+[tool.uv]
+# The `lambda` and `cdk` groups resolve `attrs` to incompatible versions.
+# Declaring them as conflicts lets uv produce one uv.lock that contains both
+# resolutions, installable independently via `uv sync --only-group lambda`
+# or `uv sync --group cdk`.
+conflicts = [
+    [{ group = "lambda" }, { group = "cdk" }],
+]
+
+# =============================================================================
+# Ruff — fast Python linter and formatter (replaces flake8, isort, and black)
+# =============================================================================
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+exclude = [".venv", "cdk.out", "docs", "__pycache__"]
+
+[tool.ruff.lint]
+# Allows _-prefixed variables (e.g. _, _unused) to be unused without warnings
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes — unused imports, undefined names
+    "I",    # isort — import ordering
+    "C",    # flake8-comprehensions — inefficient list/dict/set comprehensions
+    "B",    # flake8-bugbear — likely bugs and design issues
+    "S",    # flake8-bandit — security checks
+    "UP",   # pyupgrade — modernize syntax for the target Python version
+    "SIM",  # flake8-simplify — suggest simpler code patterns
+    "RUF",  # ruff-specific rules
+    "T20",  # flake8-print — catches print() (use Logger instead in Lambda)
+    "PT",   # flake8-pytest-style — enforces pytest conventions
+    "N",    # pep8-naming — snake_case functions, PascalCase classes, SCREAMING_SNAKE constants
+    "RET",  # flake8-return — unnecessary else after return, missing/redundant return values
+]
+ignore = [
+    "S101",  # allow assert in tests
+    "E203",  # whitespace before ':' (formatter handles this)
+    "E501",  # line-too-long (formatter enforces line-length instead)
+    "W191",  # indentation contains tabs
+]
+
+# Controls ruff format (the formatter, equivalent to black)
+[tool.ruff.format]
+quote-style = "double"  # enforce double quotes throughout
+indent-style = "space"  # spaces, not tabs
+line-ending = "auto"    # detect line endings per file (LF on Unix, CRLF on Windows)
+
+# Controls how imports are grouped and sorted (replaces isort)
+[tool.ruff.lint.isort]
+# Ensures these packages sort into the third-party group rather than first-party
+known-third-party = ["aws_lambda_powertools", "boto3"]
+
+[tool.ruff.lint.per-file-ignores]
+# E402: module-level import not at top of file — __init__.py sometimes needs setup code first
+"__init__.py" = ["E402"]
+# S101: assert statements — valid in pytest; S106: hardcoded password — false positive on fixtures
+"tests/**/*.py" = ["S101", "S106"]
+# E402: imports follow pytest.importorskip() which must come first to skip the module when aws_cdk is absent
+"tests/cdk/test_stacks.py" = ["E402"]
+
+# =============================================================================
+# Mypy — static type checker
+# All settings tighten type safety beyond mypy's permissive defaults.
+# =============================================================================
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true          # warn when a typed function returns Any (often masks missing types)
+warn_unused_configs = true      # warn if a mypy config section is unused or misspelled
+warn_unused_ignores = true      # warn if a # type: ignore comment is no longer needed (prevents rot)
+disallow_untyped_defs = true    # every function must have complete type annotations
+check_untyped_defs = true       # type-check function bodies even if the function lacks annotations
+no_implicit_optional = true     # f(x: str = None) does not implicitly mean Optional[str]
+ignore_missing_imports = true   # suppress errors for third-party packages without type stubs
+show_error_codes = true         # print [error-code] next to each error (required for type: ignore[code])
+
+# =============================================================================
+# Pylint — design and complexity checks that complement ruff's style checks
+# Disabled rules are handled by ruff or produce false positives in this project.
+# =============================================================================
+[tool.pylint."messages control"]
+disable = [
+    "C0114",  # missing-module-docstring (not enforced in this project)
+    "C0115",  # missing-class-docstring
+    "C0116",  # missing-function-docstring
+    "C0301",  # line-too-long (ruff handles this)
+    "C0303",  # trailing-whitespace (ruff handles this)
+    "C0304",  # missing-final-newline (ruff handles this)
+    "C0305",  # trailing-newlines (ruff handles this)
+    "C0411",  # wrong-import-order (ruff isort handles this)
+    "E0401",  # import-error (mypy handles this more accurately)
+    "E1120",  # no-value-for-argument (false positive on Powertools decorators)
+    "R0903",  # too-few-public-methods (acceptable for CDK constructs and data classes)
+    "W0611",  # unused-import (ruff F401 handles this)
+    "W0612",  # unused-variable (ruff F841 handles this)
+    "W0613",  # unused-argument (unavoidable with some decorator signatures)
+    "W0718",  # broad-exception-caught (intentional for non-critical fallback paths)
+]
+
+[tool.pylint.format]
+max-line-length = 120  # must match [tool.ruff] line-length above
+max-module-lines = 1400  # CDK frontend stack legitimately exceeds default 1000 — many resources, each with its own nag suppressions, plus the audit-pass additions (KMS confused-deputy guards, CloudTrail bucket Deny, async DLQ wiring, RUM log-group cleanup CR, etc.)
+
+# Structural complexity thresholds — pylint fails if any function or class exceeds these.
+# Complexity is also enforced via the xenon pre-commit hook.
+[tool.pylint.design]
+max-args = 8         # max parameters per function
+max-locals = 32      # max local variables per function (CDK stacks legitimately have many — frontend __init__ wires ~31 after the audit-pass additions)
+max-returns = 6      # max return statements per function
+max-branches = 12    # max branches (if/for/while/try) per function
+max-statements = 55  # max statements per function body — frontend __init__ runs ~52 after the audit-pass additions
+max-attributes = 10  # max instance attributes per class
+
+# =============================================================================
+# Pytest — test runner configuration
+# =============================================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]  # only collect tests from tests/ (avoids scanning the whole project)
+timeout = 30           # fail any test that runs longer than 30 seconds (pytest-timeout)
+addopts = [
+    "-ra",                       # print a short summary of all non-passed tests at the end
+    "--cov=lambda",              # measure coverage for the lambda/ source directory
+    "--cov-branch",              # track branch coverage (not just line coverage)
+    "--cov-report=term-missing", # show uncovered line numbers in the terminal output
+    "--cov-report=html",         # also generate an HTML coverage report
+    "--cov-fail-under=100",      # fail the run if total coverage drops below 100%
+    "--no-cov-on-fail",          # skip coverage reporting when tests fail (avoids misleading output)
+    "-n", "auto",                # run tests in parallel across all CPU cores (pytest-xdist)
+    "--html=report.html",        # generate an HTML test results report (pytest-html)
+    "--self-contained-html",     # embed all assets into the HTML file (no external dependencies)
+]
+log_cli = true          # stream log output in real time during the test run
+log_cli_level = "WARNING"  # only show WARNING and above (suppress DEBUG/INFO noise)
+env = [
+    "AWS_BACKEND_STACK_NAME=HelloWorld-us-east-1",
+    "AWS_FRONTEND_STACK_NAME=HelloWorldFrontend-us-east-1",
+    "POWERTOOLS_IDEMPOTENCY_DISABLED=true",
+    "POWERTOOLS_SERVICE_NAME=hello-world",
+    "POWERTOOLS_METRICS_NAMESPACE=HelloWorld",
+    "POWERTOOLS_LOG_LEVEL=INFO",
+    "IDEMPOTENCY_TABLE_NAME=test-idempotency",
+    "GREETING_PARAM_NAME=/test/greeting",
+    "APPCONFIG_APP_NAME=test-app",
+    "APPCONFIG_ENV_NAME=HelloWorld-test-env",
+    "APPCONFIG_PROFILE_NAME=HelloWorld-test-features",
+]
+
+# =============================================================================
+# Coverage — controls pytest-cov and standalone `coverage` runs
+# =============================================================================
+[tool.coverage.run]
+source = ["lambda"]  # measure coverage for the lambda/ directory only
+omit = ["tests/**"]  # exclude test files themselves from coverage measurement
+branch = true        # track branch coverage in addition to line coverage
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",  # manual opt-out on a per-line basis
+    "if TYPE_CHECKING:",  # type-only imports are never executed at runtime
+]

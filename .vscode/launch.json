@@ -1,0 +1,41 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Pytest: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${file}",
+                "-v",
+                "--override-ini=addopts="
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "purpose": ["debug-test"]
+        },
+        {
+            "name": "CDK: Synth (app.py)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/app.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "CDK_DEFAULT_ACCOUNT": "123456789012",
+                "CDK_DEFAULT_REGION": "us-east-1",
+                "AWS_DEFAULT_REGION": "us-east-1"
+            }
+        }
+    ]
+}

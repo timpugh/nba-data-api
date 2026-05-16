@@ -1,0 +1,47 @@
+{
+  "app": "uv run --group cdk --group test python3 app.py",
+  "watch": {
+    "include": ["**"],
+    "exclude": [
+      "README.md",
+      "cdk*.json",
+      "requirements*.txt",
+      "source.bat",
+      "**/__pycache__",
+      "**/.venv",
+      "*.egg-info"
+    ]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": ["aws", "aws-cn"],
+
+    "_comment_safe_flags": "These flags are safe to enable — they produce zero CloudFormation template drift against the currently deployed stacks.",
+    "@aws-cdk/core:validateSnapshotRemovalPolicy": true,
+    "@aws-cdk/core:enableAdditionalMetadataCollection": true,
+    "@aws-cdk/core:explicitStackTags": true,
+    "@aws-cdk/core:aspectPrioritiesMutating": true,
+    "@aws-cdk/core:includePrefixInUniqueNameGeneration": true,
+    "@aws-cdk/aws-dynamodb:resourcePolicyPerReplica": true,
+    "@aws-cdk/aws-kms:reduceCrossAccountRegionPolicyScope": true,
+    "@aws-cdk/aws-lambda:useCdkManagedLogGroup": true,
+    "@aws-cdk/aws-cloudfront:defaultFunctionRuntimeV2_0": true,
+    "@aws-cdk/aws-apigateway:requestValidatorUniqueId": true,
+    "@aws-cdk/aws-apigateway:authorizerChangeDeploymentLogicalId": true,
+    "@aws-cdk/customresources:installLatestAwsSdkDefault": false,
+
+    "_comment_template_changing_flags": "These flags produce real CloudFormation changes and were validated via cdk diff before enabling.",
+    "@aws-cdk/core:enablePartitionLiterals": true,
+    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
+    "@aws-cdk/aws-s3:createDefaultLoggingPolicy": true,
+    "@aws-cdk/aws-s3:publicAccessBlockedByDefault": true,
+    "@aws-cdk/custom-resources:logApiResponseDataPropertyTrueDefault": false,
+
+    "_comment_iam_flags": "These flags restructure IAM policies for least-privilege. Enabled together to minimize deploy churn.",
+    "@aws-cdk/aws-lambda:createNewPoliciesWithAddToRolePolicy": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "_skipped_@aws-cdk/aws-apigateway:disableCloudWatchRole": "Incompatible with NIST 800-53 R5 — execution logging (APIG6 / APIGWExecutionLoggingEnabled) requires the account-level CloudWatch role",
+    "_skipped_@aws-cdk/aws-iam:standardizedServicePrincipals": "Synth-tested locally: emits real template drift on the backend stack (different service-principal computation in some IAM policies). Flip during a planned IAM migration with cdk diff review, not as a no-drift cleanup."
+  }
+}

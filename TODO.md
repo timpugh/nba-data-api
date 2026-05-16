@@ -1,0 +1,187 @@
+# TODO
+
+Items that would improve this project for production use but are not yet implemented.
+
+## Production readiness checklist
+
+The hard gates a fork needs to clear before customer traffic touches it. Most items are also broken out individually in the per-service sections below — this section is the at-a-glance summary. The cdk-nag suppressions in [hello_world/hello_world_stack.py](hello_world/hello_world_stack.py) labeled `"... not needed for sample app"` enumerate the workload-shape gates; the rest are architectural choices outside the nag rule set.
+
+**Workload-shape gates** (cdk-nag suppressions to retire as the gate is closed):
+
+- [ ] Authentication / authorization on the API — currently `AwsSolutions-APIG4` + `AwsSolutions-COG4` suppressed
+- [ ] API Gateway request validation — `AwsSolutions-APIG2` suppressed
+- [ ] API Gateway throttling (per-stage rate + burst) — `Serverless-APIGWDefaultThrottling` suppressed
+- [ ] CORS `allow_origin` restricted from `*` to the specific frontend domain
+- [ ] AWS Backup plan for DynamoDB — `DynamoDBInBackupPlan` (NIST/HIPAA/PCI) suppressed; PITR alone is a 35-day rolling window with no cross-region/cross-account copies
+- [ ] DynamoDB deletion protection paired with `RemovalPolicy.RETAIN`
+- [ ] Lambda reserved concurrency — `NIST.800.53.R5-LambdaConcurrency` / `HIPAA.Security-LambdaConcurrency` suppressed
+
+**Edge and transport gates:**
+
+- [ ] Custom domain + ACM certificate on CloudFront and API Gateway (the defaults `*.cloudfront.net` and `*.execute-api.amazonaws.com` pin the TLS floor at TLS 1.0)
+- [ ] CloudFront `Strict-Transport-Security` header
+- [ ] CloudFront-bypass window on the `execute-api` URL closed (regional WAF on API Gateway, or CloudFront-injected secret header)
+
+**Operations gates:**
+
+- [ ] Alarms wired to a pageable channel — `MonitoringFacade` creates alarms but they aren't routed anywhere; cdk-wakeful + SNS / Chatbot / PagerDuty
+- [ ] CloudWatch Logs retention at audit-grade durations on the WAF and CloudTrail log groups (current 7-day setting is sample-app default)
+- [ ] Live integration tests in CI as a post-deploy gate
+
+**Deployment safety gates:**
+
+- [ ] Multi-environment deployment pipeline (dev → staging → prod with approval gates) — current CI builds and tests; deploys are manual via `make deploy`
+- [ ] Branch protection enforced, not routinely bypassed
+- [ ] CDK bootstrap permissions narrowed with a permissions boundary
+
+**Resilience gates:**
+
+- [ ] Multi-region deployment if the workload's RTO/RPO requires surviving a regional outage — single-region single-AZ failure modes are also implicitly accepted
+
+**Threat detection gates:**
+
+- [ ] GuardDuty enabled at the account level (Lambda Protection in particular activates the backend CMK's `kms:Decrypt` grant — see README "GuardDuty has `kms:Decrypt` on the backend CMK")
+- [ ] AWS Security Hub aggregator on, pulling Inspector / GuardDuty / IAM Access Analyzer findings into one ASFF stream
+
+**Already in place — no action required in a fork:**
+
+- [x] CMK encryption on every data-bearing resource that supports per-resource keys: DynamoDB, Lambda env vars, all log groups (Lambda / API Gateway access + execution / WAF / CloudTrail / all custom-resource provider log groups), frontend S3 bucket, AppConfig hosted configuration content, SQS DLQs, CloudTrail trail log files (per-object SSE-KMS into an SSE-S3 bucket). Account/region-wide encryption settings (X-Ray, Glue Data Catalog) deliberately out of scope.
+- [x] cdk-nag with five compliance rule packs (AwsSolutions, Serverless, NIST 800-53 R5, HIPAA Security, PCI DSS 3.2.1) gating every `cdk synth`
+- [x] WAF with five managed rule sets + forwarded-IP rate limit, attached to CloudFront
+- [x] CloudTrail with object-level S3 data events on every audited bucket, log-file integrity validation, CMK-encrypted trail log files
+- [x] GuardDuty `kms:Decrypt` grant on the backend CMK (dormant until Lambda Protection is enabled in the account)
+- [x] Supply-chain hygiene: pip-audit + bandit + hash-pinned GitHub Actions + Dependabot grouped updates + `uv.lock` ↔ `lambda/requirements.txt` drift check in CI
+- [x] CDK synth runs against Stage-nested stacks (`'**'` glob) so cdk-nag actually evaluates the workload stacks, not just the App's direct children
+
+## Infrastructure
+
+- [ ] **Multi-environment CDK stacks** — separate dev/staging/prod stacks with environment-specific config (SSM paths, AppConfig environments, DynamoDB table names)
+- [ ] **API Gateway throttling** — add rate limiting and burst limits to prevent abuse
+- [x] **WAF** — WAF WebACL deployed in `HelloWorldWafStack` and attached to CloudFront. AWS managed rule sets (IP reputation, CRS, known bad inputs, anonymous IPs) and a forwarded-IP rate-limit rule are active. WAF is not attached directly to API Gateway because the CloudFront layer already enforces it for all browser traffic.
+- [ ] **SSM SecureString** — store the greeting parameter as a `SecureString` (KMS-encrypted) rather than plaintext. Note: CloudFormation does not support creating SecureString parameters, so this would require a custom resource or out-of-band provisioning.
+- [ ] **Parameterise the SSM path** — pass the parameter path through CDK context rather than deriving it from the stack name
+- [ ] **AppConfig initial value management** — manage the feature flag hosted configuration outside the CDK stack so it can be updated independently of a deployment
+- [ ] **Multi-region deployment for regional-outage survival** — currently single-region (us-east-1). Active-active or active-passive across regions requires per-region stacks, Route 53 health checks, DynamoDB Global Tables (or app-level replication), and cross-region S3 replication. AWS Resilience Hub is the assessment gate against defined RTO/RPO targets. Many workloads are fine single-region — the choice should be explicit and tied to the workload's resilience requirements rather than a default. Significant work; appropriate only if the RTO/RPO actually requires it.
+
+## Observability
+
+- [ ] **CloudWatch alarms** — add alarms for Lambda error rate, p99 latency, and DynamoDB throttles, with SNS notifications
+- [ ] **Dead letter queue (DLQ) on the application Lambda** — `HelloWorldFunction` is invoked synchronously by API Gateway so a function-level DLQ doesn't apply today. The `AwsCustomResource` provider singletons (which CFN invokes async) already have an SQS DLQ wired via `attach_async_failure_destination()`. If the application Lambda ever takes async event sources (EventBridge, SNS, S3 events), wire `on_failure` on those source mappings or invocation configs.
+- [ ] **Structured error reporting** — integrate with an error tracking service (e.g. Sentry) for aggregated error visibility
+- [ ] **CloudWatch Logs retention beyond 7 days** — every log group in the stack uses `RetentionDays.ONE_WEEK`. Most compliance frameworks (HIPAA, PCI) require 1-year minimum on audit-relevant logs (CloudTrail, WAF), and the [CloudTrail security best practices](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/best-practices-security.html) reinforce that. For a fork at production scale, raise audit-log retention to 365 days while keeping application logs short to control storage cost. The `CloudTrailLogsBucket` lifecycle (currently 30-day expiration) needs to move in lockstep.
+- [ ] **`cdk-wakeful` alarm routing** — the `MonitoringFacade` creates dashboards and alarms but the alarms aren't wired to anything. [cdk-wakeful](https://github.com/aws-samples/cdk-wakeful) auto-routes alarms to SNS, with built-in integrations for AWS Chatbot and SSM Incident Manager. Single-line CDK change to enable; cost is an SNS topic + subscription. Real win once the stack is operated; pointless for a portfolio piece nobody monitors.
+- [ ] **AWS Config conformance packs** — different *timing* layer from cdk-nag (cdk-nag is preventive at synth time, Config is detective at runtime). Catches drift introduced after deploy: someone disables KMS via console, IAM policy expansion via service-linked roles, a new resource type that an Aspect rule doesn't yet cover. Could live as a sibling stack `HelloWorldComplianceStack` deploying an `AWS::Config::ConformancePack` referencing one of AWS's published templates (Operational Best Practices for HIPAA Security, Operational Best Practices for FedRAMP, etc.). Cost: per-rule-evaluation pricing that scales with resource count, plus the configuration recorder.
+
+## CI/CD
+
+- [ ] **Deploy workflow** — GitHub Actions workflow to run `cdk deploy` on merge to `main` (deliberately deferred)
+- [ ] **CDK diff on PRs** — run `cdk diff` in CI on pull requests to surface infrastructure changes before merge
+- [x] **CDK synth in CI** — `cdk-check` CI job runs `cdk synth` (catching unsuppressed cdk-nag findings) and `aws_cdk.assertions.Template` tests that verify key security properties of each synthesized stack
+- [ ] **Live integration tests in CI** — run API Gateway and CloudFront integration tests against a deployed dev stack as part of the CI pipeline (blocked on Deploy workflow above)
+
+## Security
+
+- [ ] **API Gateway authentication** — add an API key, IAM auth, or Cognito authorizer to restrict access
+- [x] **Lambda least-privilege IAM** — DDB, SSM, AppConfig grants are scoped to the specific resource ARNs. `appconfig:GetLatestConfiguration` and X-Ray segment publishes remain at `Resource: "*"` because their target ARNs (configurationsession token, segment) are dynamically generated at call time and not addressable by IAM at policy-creation time — documented in the IAM5 nag suppression.
+- [ ] **VPC placement** — place the Lambda function inside a VPC if it needs to access private resources
+- [ ] **CORS origin restriction** — the Lambda handler uses `allow_origin="*"`. In production, restrict to the specific CloudFront domain and set `allow_credentials=True` if cookies or Authorization headers are needed.
+- [ ] **CloudFront Strict-Transport-Security header** — the CDK `SECURITY_HEADERS` managed `ResponseHeadersPolicy` sets X-Content-Type-Options, X-Frame-Options, Referrer-Policy, X-XSS-Protection but **not** HSTS. Per the [CloudFront controls reference](https://docs.aws.amazon.com/controltower/latest/controlreference/cloudfront-rules.html), HSTS is recommended. Build a custom `ResponseHeadersPolicy` that includes both the existing four and `strict_transport_security` (e.g., `max-age=31536000`, `include_subdomains=True`, `preload=True` once the domain is stable enough to commit to the preload list).
+- [ ] **Narrow the CDK bootstrap permissions** — the default `cdk bootstrap` creates a `CloudFormationExecutionRole` with `AdministratorAccess`. Any identity that can `sts:AssumeRole` into the deployment roles (by default, any principal in the account) can do anything in the account during deploy. Fine for a solo-dev laptop, a headache for organizations. Fix path: re-bootstrap with `cdk bootstrap --custom-permissions-boundary <POLICY_NAME>` so CFN can do anything inside the boundary but can't escape it (e.g., can't attach `AdministratorAccess` or create roles that bypass the boundary). At the org level, use SCPs via AWS Organizations to prevent tampering with the boundary. Restrict who can assume `DeploymentActionRole` to the CI role + named humans. **Sequence this before the Deploy workflow above** — once CI gets credentials that can assume the bootstrap roles, the admin default becomes a real blast radius.
+- [ ] **Branch protection enforced, not routinely bypassed** — branch protection rules exist on `main` (required status checks from CI), but `git push` reports `Bypassed rule violations for refs/heads/main`, meaning maintainers routinely override the gate. For production, each bypass should be an audited exception with a recorded rationale, not a normal merge workflow — otherwise the gate exists only to slow down non-maintainers. Tighten via GitHub branch protection settings: require status checks to pass for *administrators* too, require pull-request reviews, and dismiss stale reviews on new commits. The signal "maintainer pushes directly to main" should be unusual enough that each occurrence triggers a question.
+- [ ] **Enforce TLS 1.2+ minimum on both edges** — the CloudFront distribution and API Gateway both currently sit on AWS-managed default certificates (`*.cloudfront.net` and `*.execute-api.{region}.amazonaws.com`), which pin the TLS floor at **TLS 1.0**. Verified empirically: `curl --tls-max 1.0 https://<dist>.cloudfront.net` and the equivalent against the execute-api endpoint both complete a full handshake. The CDK code in [hello_world_frontend_stack.py](hello_world/hello_world_frontend_stack.py) sets `TLS_V1_2_2021` but AWS silently overrides it whenever `CloudFrontDefaultCertificate: true`. The cdk-nag rule `AwsSolutions-CFR4` correctly flags this and is intentionally suppressed at the stack level. **Fix path:** acquire a domain, provision an ACM certificate (CloudFront cert must live in us-east-1, API Gateway custom-domain cert lives in the API's region), attach as `viewer_certificate` / `apigateway.DomainName`, then set the strongest matching `securityPolicy` (e.g. `SecurityPolicy_TLS13_2025_EDGE` for an edge-optimized API Gateway domain, `SecurityPolicy_TLS13_1_3_2025_09` for a regional one, and `TLSv1.2_2021` minimum on CloudFront). Once the custom domain is wired and verified, remove the CFR4 suppression. Also reconsider whether the API needs to remain `EDGE` — CloudFront already fronts it, so making the backend `REGIONAL` removes the redundant edge layer and unlocks the regional `securityPolicy` set (which includes post-quantum and PFS variants).
+
+## Code
+
+- [ ] **Input validation on caller-facing inputs** — `enable_validation=True` is set on the `APIGatewayRestResolver` in [lambda/app.py](lambda/app.py) and Pydantic models drive response validation, so the framework is wired. The `/hello` route currently accepts no query string, path, or body parameters, so there is nothing to validate yet. When new routes are added that accept caller input, type-annotate the handler parameters with Pydantic-compatible types (or `Annotated[..., Query/Body]`) so Powertools enforces the schema and rejects malformed input with a 422 before any business logic runs.
+- [ ] **Contributing guide** — `CONTRIBUTING.md` with fork/branch/PR workflow and pre-commit setup instructions
+- [x] **Changelog** — `CHANGELOG.md` auto-generated from conventional commit history via [git-cliff](https://github.com/orhun/git-cliff), configured in `cliff.toml`. Regenerate after each release with `git cliff -o CHANGELOG.md`. Dependabot bumps and merge commits are filtered out so the changelog reflects feature/fix/docs/CI history rather than dependency churn.
+- [x] **`cdk destroy` BucketDeployment cache-invalidation race** — Fixed by decoupling cache invalidation from `s3deploy.BucketDeployment` into a standalone `cr.AwsCustomResource` that defines `on_create` + `on_update` only (no `on_delete`). CFN removes the resource from stack state during teardown without making any CloudFront API call to race with. CallerReference is gated on the BucketDeployment's content-hashed S3 object key so invalidations only fire when frontend assets actually change, conserving the 1000-paths/month free quota. Permanent fix for [aws/aws-cdk#15891](https://github.com/aws/aws-cdk/issues/15891) — see [README "Decoupled CloudFront cache invalidation"](README.md#design-decisions-and-known-limitations) for the longer write-up.
+
+## Service-level hardening
+
+Per-service hardening items grouped by AWS service so each block can be tackled in isolation. Items deferred for "no direct CDK construct" or "would require restructuring upstream data" reasons are flagged.
+
+### API Gateway
+
+- [ ] **APIGW-layer request validation** — currently validation runs inside Lambda via `enable_validation=True` on the resolver. APIGW-level `request_validator_options` rejects malformed requests at the gateway before they hit Lambda billing. Cheaper for adversarial traffic.
+- [ ] **Resource policy on the REST API** — restrict invocation to specific source IPs, VPCs, or AWS accounts without needing a full authorizer. Useful for partner-facing or internal-only APIs.
+- [ ] **Close the CloudFront-bypass window on `execute-api.{region}.amazonaws.com`** — the regional API Gateway URL is published in the `HelloWorldApiOutput` CfnOutput and bypasses your CloudFront-only WebACL. Per [Protect your REST APIs](https://docs.aws.amazon.com/apigateway/latest/developerguide/rest-api-protect.html) and the [origin-security blog](https://aws.amazon.com/blogs/security/how-to-enhance-amazon-cloudfront-origin-security-with-aws-waf-and-aws-secrets-manager/), the two AWS-supported fixes are: (a) attach a regional WAF ACL to API Gateway too, mirroring the rules from the CLOUDFRONT-scoped one; or (b) have CloudFront inject a custom secret header from Secrets Manager and add an API Gateway resource policy that denies any request without it. Option (b) requires a Secrets Manager rotation Lambda + a custom CloudFront origin request policy; option (a) is the lower-effort path.
+- [ ] **Custom domain + endpoint export + canary deployments + Mutual TLS** — out of scope for the sample app: custom domain depends on owning a domain ([TLS item](#security)); canary deploys/MTLS only justify their complexity once you have real traffic and partners.
+
+### Lambda
+
+- [ ] **Dead Letter Queue (DLQ)** — already covered by [Observability](#observability). Lower priority for the synchronous API path; required if you ever add async invokes (EventBridge, SNS, S3 events).
+- [ ] **Reserved concurrency** — uncapped function can absorb the entire account concurrency limit (default 1000) on a runaway loop. Setting a per-function ceiling (e.g. 100) bounds blast radius and keeps the rest of the account responsive.
+- [x] **Async failure destination on the AwsCustomResource provider Lambda** — implemented via `attach_async_failure_destination()` in [hello_world/nag_utils.py](hello_world/nag_utils.py). The provider singleton (which CloudFormation invokes asynchronously during stack lifecycle events) writes failed invocation envelopes to an SQS DLQ (CMK-encrypted, 14-day retention, SSL-enforced) so post-mortem evidence isn't lost when a CR crashes through Lambda's two automatic async retries. The HelloWorldFunction itself remains synchronous (API Gateway proxy) and intentionally has no DLQ.
+- [ ] **SnapStart for Python** — Python SnapStart launched in November 2024. Roughly 70% cold-start reduction at the cost of a one-time init snapshot. Worth enabling if cold-start latency becomes a UX issue.
+- [ ] **Lambda Insights** — extension-based enhanced metrics (CPU time, memory utilization, init duration, network bytes). One-line CDK setting (`insights_version=lambda.LambdaInsightsVersion.VERSION_X`); ~$0.50/month per function for the metric stream.
+
+### DynamoDB
+
+- [ ] **Deletion protection** — `deletion_protection=True` prevents accidental `DeleteTable`. For the idempotency table the data is regenerable, but the construct still belongs on a reference architecture.
+- [ ] **AWS Backup plan** — AWS Backup integration for compliance/long-term retention. PITR alone covers <35 days; AWS Backup supports years.
+
+### S3
+
+- [ ] **Versioning on the frontend bucket** — currently disabled because git is the source of truth for deployed assets. If git is ever lost or assets get manually overwritten, recovery requires a redeploy from a known-good commit. Enabling versioning gives in-bucket recovery as well, and is also a prerequisite for cross-region replication.
+- [ ] **S3 Inventory / Storage Lens / Object Lock / Macie** — `(Required)` per the broader S3 best-practice set: Inventory exports object-level metadata daily, Storage Lens gives org-wide visibility, Object Lock enforces write-once retention for compliance, Macie scans for sensitive data. None justify themselves at sample-app scale; revisit at production scale or under compliance scope.
+
+### IAM
+
+- [ ] **Permissions boundary on the Lambda execution role** — already covered by [Narrow the CDK bootstrap permissions](#security) and the broader bootstrap-hardening item; the same `cdk bootstrap --custom-permissions-boundary` work applies to runtime roles, not just deployment roles.
+- [ ] **Account-level identity governance is out of scope for this stack** — root-account MFA, IAM Identity Center, GuardDuty, AWS Config, Security Hub, CloudTrail organization trail, SCPs/RCPs, Access Analyzer, credential reports, password policy, root activity alarms. These are real `(Required)` items in any IAM critical-workload review, but they belong in an account-baseline / landing-zone configuration (e.g. AWS Control Tower) rather than in a per-application CDK stack. If forking this for a real workload, ensure a separate account-baseline mechanism owns these.
+- [ ] **Inline policies on Lambda/CloudTrail service roles** — CDK generates default policies inline for the Lambda execution role, the CloudTrail LogsRole, and similar service roles. The `IAMNoInlinePolicy` rule is suppressed in each location with the same reasoning ("CDK generates the default policy inline — not directly configurable"). This is a CDK behavior, not a stack defect; would only change if CDK starts emitting managed policies by default.
+
+### Athena
+
+- [ ] **Bytes-scanned-per-query data usage control** — set `BytesScannedCutoffPerQuery` on the workgroup to cap runaway scans at a known dollar amount. Cheap insurance against forgotten `WHERE` clauses.
+- [ ] **`MinimumEncryptionConfiguration` on the workgroup (belt-and-suspenders)** — per the [Athena minimum-encryption docs](https://docs.aws.amazon.com/athena/latest/ug/workgroups-minimum-encryption.html), the dedicated `MinimumEncryptionConfiguration` field enforces a floor *even when client overrides are allowed*. CDK 2.248's L1 `CfnWorkGroup` doesn't expose that field directly; achieving it requires a property override on the underlying CFN resource. The current setup (`enforce_work_group_configuration=True` + `EncryptionOption=SSE_KMS`) already prevents per-query overrides at this workgroup specifically, which is project-scoped and not account- or region-wide, so for a sample app it's equivalent.
+- [ ] **Workgroup-level query result reuse** — *Deferred: no CDK / CFN support.* The CFN `AWS::Athena::WorkGroup.WorkGroupConfiguration` schema does not expose a result-reuse default. Result reuse can only be set per-query in `StartQueryExecution` calls, which doesn't fit a CDK-declared workgroup. Revisit when CFN adds `ResultReuseConfiguration` to the workgroup schema.
+- [ ] **Cost allocation tags on the workgroup** — apply tags (Environment, Project, Owner) so Athena query costs roll up cleanly in Cost Explorer.
+- [ ] **Partition projection on access-log tables** — *Deferred: requires upstream log restructuring.* The Glue tables for `cloudfront_logs` and `s3_access_logs` currently scan every file in the prefix on every query because CloudFront standard v1 logs and S3 server access logs both write to flat key spaces (no `year=YYYY/month=MM/...` directories). Implementing partition projection requires either: (a) migrating CloudFront from standard v1 to standard v2 logs (separate CDK construct via the Logs delivery API) AND switching S3 server access logs to `target_object_key_format=PartitionedPrefix` for date-based S3 prefixes; or (b) a re-organize Lambda to copy logs into Hive-style partition prefixes. Both are significant changes and (a) requires CDK to catch up on standard v2 wiring. Revisit when the v2 path is well-supported.
+- [ ] **Athena CloudWatch alarms** — `QueryFailed` rate, `ProcessedBytes` per query/per workgroup. Same gap as the broader [CloudWatch alarms](#observability) item.
+
+### Glue
+
+- [ ] **Partition projection on tables** — same item as Athena above; same deferral reasoning. Glue table parameters (`projection.enabled`, `projection.<col>.type`, `storage.location.template`) would carry the projection definitions, but the projection only helps if the underlying S3 layout is partitioned, which it isn't yet.
+- [ ] **Glue Security Configuration** — encryption-at-rest for Glue job bookmarks, S3-side encryption pushdown for crawlers, and CloudWatch encryption settings. N/A until Glue jobs or crawlers are added; the current stack only uses the catalog (database + tables).
+- [~] **Glue Data Catalog encryption** — *implemented and deliberately reverted.* Two reasons: (1) `AWS::Glue::DataCatalogEncryptionSettings` is account/region-scoped — there is one Glue catalog per account per region, so deploying this reference architecture into an account with other Glue users would silently override their encryption settings or conflict outright; (2) the catalog metadata in *this* stack (column names from public CloudFront/S3 access-log schemas) carries no confidentiality requirement, and the stack has no Glue connections, so encrypting connection passwords protects nothing. If you fork this and your catalog will hold genuinely sensitive table metadata, put `glue.CfnDataCatalogEncryptionSettings` into a separate, intentionally account-scoped stack so the deploy boundary reflects the resource's account-wide nature. See the Glue Data Catalog write-up in the README for the longer rationale.
+
+### Cognito
+
+- [ ] **All Cognito User Pool hardening checks become live if user-facing auth is added** — the current stack has no User Pool. The Identity Pool exists only as the WebIdentity broker for RUM guest credentials and is already scoped to a single `rum:PutRumEvents` action on a specific monitor ARN. If a User Pool is added (login, signup, federated identities), the following items become required: User Pool Plus tier for advanced security, MFA configuration, password policy (12+ chars), `PreventUserExistenceErrors`, threat protection, token revocation, deletion protection, custom domain with ACM, recovery mechanisms, hosted UI customization, sign-in/sign-up alarms, MAU quota monitoring. Cognito threat protection requires the Plus tier (paid).
+
+### Systems Manager
+
+- [ ] **Greeting parameter as `SecureString`** — already in [Infrastructure](#infrastructure) as "SSM SecureString". Carries forward — CFN does not natively create SecureString parameters, would require a custom resource.
+- [ ] **Parameter Store expiration policy** — set `policies` JSON with `Expiration`/`ExpirationNotification`/`NoChangeNotification` rules so credential-style parameters surface staleness. N/A for the current greeting parameter (not a credential), but worth wiring once any rotating secret/credential lives in Parameter Store.
+
+### WAF
+
+- [ ] **CloudWatch alarms on BlockedRequests spikes and WebACLCapacityUnits (WCU)** — same gap as the broader [CloudWatch alarms](#observability) item. Sustained block spikes are a leading indicator of an attack ramp; WCU alarms surface when added rules push the WebACL toward the 1500 WCU pricing threshold.
+- [ ] **WAF logging — `redacted_fields` and `logging_filter`** — per the [`CfnLoggingConfiguration` reference](https://docs.aws.amazon.com/cdk/api/v2/python/aws_cdk.cfn_property_mixins.aws_wafv2/CfnLoggingConfigurationMixinProps.html), WAF logs include full request headers, body, and URI by default. If the API ever accepts an `Authorization` header, a session cookie, or a body field with PII, that lands in the WAF log group unredacted. Wire `redacted_fields=[{single_header: {name: "authorization"}}, {single_header: {name: "cookie"}}, ...]` so they're scrubbed at log-write time. Separately, `logging_filter` lets you drop ALLOW logs and keep BLOCK/COUNT/CAPTCHA so log volume is proportional to threat traffic — relevant once paid traffic actually hits the WAF.
+- [ ] **Pin AMR managed-rule-group versions** — the WebACL currently uses the floating "default" version of each AMR. Pinning to a specific version (e.g. `Version_2.0` of `AWSManagedRulesCommonRuleSet`) means rule updates from AWS go through your release process rather than landing automatically. Trade-off: less drift, but you have to track AMR change announcements and bump the version manually.
+- [ ] **Subscribe to AMR SNS update topics** — AWS publishes notifications when managed rule groups change behavior (action shifts, new sub-rules, deprecations). Subscribing means you find out *before* the change lands rather than from a Slack page about a sudden block-rate spike.
+- [x] **Add `AWSManagedRulesAnonymousIpList` AMR** — implemented at WebACL priority 3 in [hello_world_waf_stack.py](hello_world/hello_world_waf_stack.py). Blocks Tor exit nodes, hosting providers, and known anonymizing services.
+- [ ] **CAPTCHA / Challenge actions on high-risk routes** — N/A until login/signup/credential-bearing routes exist. When they do, replacing a `Block` action on a rate-based rule with `Challenge` (silent JS challenge) or `CAPTCHA` (visible) catches bots without false-positiving real users.
+- [ ] **Geo-blocking rule** — if you have countries that should never reach the app, a single `geoMatchStatement` rule blocks them at the edge. Free, low WCU. Skip if global traffic is expected.
+- [ ] **Bot Control / ATP / ACFP** — paid advanced AMRs (Bot Control common ~$10/M requests, targeted higher). Bot Control covers automated browser-based traffic; ATP (Account Takeover Prevention) protects login flows; ACFP (Account Creation Fraud Prevention) protects signup flows. Skip until login/signup routes exist and are observably under attack.
+- [~] **AntiDDoSRuleSet** — *implemented and deliberately reverted.* The rule group provides L7 anti-DDoS via Challenge + Block, but it carries a $20/month per-WebACL entity activation fee plus $0.15/million requests on top of the standard WAF base ($5/month WebACL + $1/month per rule + $0.60/million inspections). For this reference architecture that would have raised fixed WAF cost from $10/month to $31/month for one rule whose Block arm only fires on AWS-observed high-confidence DDoS classification, which the existing forwarded-IP rate limit (200 req/5min) already covers at the threat profile a Hello World demo realistically faces. Also requires `ManagedRuleGroupConfig.ClientSideActionConfig` declared and (when `UsageOfAction=ENABLED`) at least one URI in `ExemptUriRegularExpressions` — neither fits a CloudFront-fronted SPA with no health-check or m2m endpoints to exempt. See the AntiDDoS write-up in the README for the longer rationale. Revisit if the workload ever sees enough traffic that AWS's classifier has signal to act on, or when the $20/month is rounding error.
+
+### AppConfig
+
+- [ ] **AWS AppConfig Lambda extension layer** — per [Using AWS AppConfig Agent with AWS Lambda](https://docs.aws.amazon.com/appconfig/latest/userguide/appconfig-integration-lambda-extensions.html), the extension caches configurations in-process, polls in the background, and serves them via `localhost:2772` — reducing both AppConfig API spend and cold-start latency. Powertools' `AppConfigStore` does in-memory caching too, so the gain over the current setup is smaller than for raw API users; still the AWS-recommended pattern for high-throughput Lambdas. One-line addition: `_lambda.LayerVersion.from_layer_version_arn(...)` with the regional AppConfig extension ARN, then point Powertools at the localhost endpoint.
+
+### CloudWatch RUM
+
+- [ ] **Lower the RUM session sample rate at scale** — currently `session_sample_rate=1.0` (100%). Per the [RUM authorization docs](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-RUM-get-started-authorization.html) and [pricing](https://aws.amazon.com/cloudwatch/pricing/), RUM is billed per ingested event so 100% sampling becomes expensive once real traffic hits the page. 5–10% is a common production starting point. Also revisit `allow_cookies` and `enable_x_ray` against the workload's privacy posture — both are on for full session attribution today.
+
+### CloudTrail
+
+- [ ] **Multi-region management trail** — the trail in this stack is regional and S3-data-events-only by design (it captures every Get/Put/Delete against the audited buckets). Per [WKLD.07 of the AWS Startup Security Baseline](https://docs.aws.amazon.com/prescriptive-guidance/latest/aws-startup-security-baseline/wkld-07.html), production accounts should also have a separate management-event multi-region trail capturing IAM/STS/KMS/EC2 calls. Typically deployed at the org/account level (Control Tower / Landing Zone) rather than per-app — see the [Account-level identity governance](#iam) item under IAM.
+- [ ] **Log file integrity validation already on; consider CloudTrail Lake** — `enable_file_validation=True` is set, which produces signed digest files. For richer querying than Athena over flat CloudTrail JSON, [CloudTrail Lake](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-lake.html) gives SQL-queryable event stores with up to 7-year retention. Trade-off: per-event ingestion cost vs. the current ~free S3-as-archive path. Worth flagging once compliance scope (HIPAA, PCI) actually applies.
+
+### Frontend / browser
+
+- [ ] **CSP header on the static page** — the frontend serves no `Content-Security-Policy` header today, so the browser's default content policy applies (effectively unrestricted). For production, add a CSP via the CloudFront `ResponseHeadersPolicy` (`custom_headers_behavior` with `Content-Security-Policy: default-src 'self'; script-src 'self' https://client.rum.us-east-1.amazonaws.com; ...`). Pair with the HSTS work in [Security](#security) so security headers ship from a single managed policy.
+- [ ] **No SRI on the RUM client script** — `frontend/index.html` loads `https://client.rum.us-east-1.amazonaws.com/1.x/cwr.js` over a major-version-floating URL so AWS-published security patches reach the browser without a redeploy. The trade-off: a fixed `integrity=` SRI hash would break on the first patched release. The trust model here is "AWS-served domain over TLS 1.2+" rather than pinned content hash. If your fork pins to a specific patch version (e.g., `1.21.0`), add the matching SRI hash so the browser refuses tampered scripts; otherwise document the trade-off explicitly so a future review doesn't re-flag the absence of `integrity=`.

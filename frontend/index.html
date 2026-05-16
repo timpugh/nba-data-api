@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="alternate icon" type="image/x-icon" href="/favicon.ico" />
+  <title>Hello World</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+      padding: 48px 56px;
+      text-align: center;
+      max-width: 480px;
+      width: 100%;
+    }
+
+    h1 { font-size: 1.5rem; color: #111; margin-bottom: 8px; }
+    p.subtitle { color: #666; font-size: 0.95rem; margin-bottom: 32px; }
+
+    button {
+      background: #232f3e;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 28px;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #374151; }
+    button:disabled { background: #9ca3af; cursor: not-allowed; }
+
+    .response {
+      margin-top: 28px;
+      padding: 16px 20px;
+      border-radius: 8px;
+      font-size: 1.1rem;
+      font-weight: 500;
+      display: none;
+    }
+    .response.success { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+    .response.error   { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+
+    .spinner {
+      display: none;
+      width: 20px; height: 20px;
+      border: 2px solid #e5e7eb;
+      border-top-color: #6b7280;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      margin: 20px auto 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+  <script>
+    // CloudWatch RUM client — fetches config.json synchronously in <head> so
+    // the RUM snippet can initialize before the app code runs. enableXRay=true
+    // makes the client attach an X-Amzn-Trace-Id header to outbound fetch()
+    // calls so browser spans join the backend API Gateway + Lambda trace.
+    (function () {
+      const configPromise = fetch("/config.json").then(function (r) { return r.json(); });
+      window.__appConfigPromise = configPromise;
+      configPromise.then(function (cfg) {
+        if (!cfg || !cfg.rum || !cfg.rum.appMonitorId) return;
+        (function (n, i, v, r, s, c, x, z) {
+          x = window.AwsRumClient = { q: [], n: n, i: i, v: v, r: r, c: c };
+          window[n] = function (c, p) { x.q.push({ c: c, p: p }); };
+          z = document.createElement("script");
+          z.async = true;
+          z.src = s;
+          document.head.insertBefore(z, document.head.getElementsByTagName("script")[0]);
+        })(
+          "cwr",
+          cfg.rum.appMonitorId,
+          "1.0.0",
+          cfg.rum.region,
+          "https://client.rum.us-east-1.amazonaws.com/1.x/cwr.js",
+          {
+            sessionSampleRate: 1,
+            identityPoolId: cfg.rum.identityPoolId,
+            endpoint: "https://dataplane.rum." + cfg.rum.region + ".amazonaws.com",
+            // The http telemetry is written as a [name, config] tuple so
+            // addXRayTraceIdHeader is set explicitly. enableXRay: true defaults
+            // it to true today, but stating it explicitly guards against future
+            // client-version regressions of that default and matches the AWS
+            // reference snippet pattern.
+            telemetries: ["performance", "errors", ["http", { addXRayTraceIdHeader: true }], "interaction"],
+            allowCookies: true,
+            enableXRay: true,
+            // Session attributes are deploy-time injected via config.json so
+            // multiple deploys can feed the same monitor while remaining
+            // filterable in the dashboard.
+            sessionAttributes: cfg.rum.sessionAttributes || {},
+          }
+        );
+      }).catch(function () { /* config missing — skip RUM init */ });
+    })();
+  </script>
+</head>
+<body>
+  <div class="card">
+    <h1>Hello World</h1>
+    <p class="subtitle">Serverless reference architecture &mdash; Lambda + API Gateway + CloudFront</p>
+    <button id="btn" type="button">Call API</button>
+    <div class="spinner" id="spinner" role="progressbar" aria-label="Loading"></div>
+    <div class="response" id="response" role="status" aria-live="polite"></div>
+  </div>
+
+  <script>
+    const btn      = document.getElementById("btn");
+    const spinner  = document.getElementById("spinner");
+    const response = document.getElementById("response");
+
+    async function getApiUrl() {
+      const cfg = await (window.__appConfigPromise ?? fetch("/config.json").then((r) => r.json()));
+      return cfg.apiUrl;
+    }
+
+    btn.addEventListener("click", async () => {
+      btn.disabled      = true;
+      spinner.style.display = "block";
+      response.style.display = "none";
+
+      try {
+        const apiUrl = await getApiUrl();
+        // Idempotency-Key is required by the Lambda — Powertools' @idempotent
+        // layer keys on this header to deduplicate retries. crypto.randomUUID()
+        // gives a fresh key per click so each user-initiated call is treated
+        // as a distinct logical operation; a real client should reuse the same
+        // key across automatic retries of the same logical request instead.
+        // apiUrl from API Gateway ends in "/", so strip it before joining.
+        const base   = apiUrl.replace(/\/$/, "");
+        const res    = await fetch(`${base}/hello`, {
+          headers: { "Idempotency-Key": crypto.randomUUID() },
+        });
+        const data   = await res.json();
+
+        response.textContent      = data.message ?? JSON.stringify(data);
+        response.className        = "response success";
+      } catch (err) {
+        response.textContent = `Error: ${err.message}`;
+        response.className   = "response error";
+        // Caught errors aren't picked up by the RUM "errors" telemetry
+        // (which hooks window.onerror / unhandledrejection), so record
+        // them explicitly so they still surface in the RUM dashboard.
+        if (window.cwr) window.cwr("recordError", err);
+      } finally {
+        btn.disabled          = false;
+        spinner.style.display = "none";
+        response.style.display = "block";
+      }
+    });
+  </script>
+</body>
+</html>

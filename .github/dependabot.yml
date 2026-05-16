@@ -1,0 +1,103 @@
+version: 2
+
+updates:
+  # GitHub Actions — checks workflow YAML for newer action versions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    # Supply-chain safety: wait N days after a release before opening a PR.
+    # Fresh releases are the window in which malicious versions (tag-hijacks,
+    # compromised maintainer accounts, typo-squats) typically get caught and
+    # yanked. 3–7 days is generally enough to dodge the worst of it. Larger
+    # version jumps wait longer so major rewrites have time to surface bugs.
+    cooldown:
+      default-days: 5
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+
+  # Python — all dependency groups in a single uv.lock
+  #
+  # This project migrated from three pip-compile lock files (dev/test/lambda)
+  # to a single uv.lock that covers every group in pyproject.toml, with
+  # `[tool.uv.conflicts]` declaring the `lambda` and `cdk` groups as mutually
+  # exclusive. Dependabot's uv ecosystem updates pyproject.toml + uv.lock
+  # together, so one entry here covers every group at once.
+  #
+  # Grouped updates collapse the weekly PR volume from one-per-package to
+  # one-per-group. Each group regenerates the lock as a single atomic update,
+  # which prevents the cross-package version skew that hits
+  # boto3/botocore/aws-lambda-powertools when they are bumped individually.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    cooldown:
+      default-days: 5
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+    groups:
+      aws-cdk:
+        patterns:
+          - "aws-cdk*"
+          - "cdk-*"
+          - "constructs"
+      aws:
+        patterns:
+          - "aws-*"
+          - "boto*"
+          - "botocore*"
+          - "s3transfer"
+      pytest:
+        patterns:
+          - "pytest"
+          - "pytest-*"
+      docs:
+        patterns:
+          - "zensical"
+          - "mkdocstrings"
+          - "mkdocstrings-*"
+      linting:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "pylint"
+          - "bandit"
+          - "pip-audit"
+          - "pre-commit"
+          - "radon"
+          - "xenon"
+      patches:
+        update-types:
+          - "patch"
+
+  # pre-commit hooks — tracks the `rev:` field in .pre-commit-config.yaml.
+  # Every tool that's also pinned in pyproject.toml (ruff, mypy, bandit,
+  # pylint, xenon, pip-audit) is intentionally configured as a local
+  # `language: system` hook so its version comes from the venv uv manages
+  # from pyproject.toml. Single source of truth.
+  #
+  # That leaves only the `pre-commit/pre-commit-hooks` utility bundle
+  # (trailing-whitespace, end-of-file-fixer, check-yaml, check-json) for
+  # Dependabot to track here — those have no equivalent in pyproject.toml,
+  # so the upstream rev: pin is the only place to bump them.
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    cooldown:
+      default-days: 5
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3

@@ -1,0 +1,297 @@
+"""CDK stack assertion tests.
+
+These tests synthesize each CDK stack in-process using ``aws_cdk.assertions.Template``
+and verify that key security properties are correctly configured. They serve as a
+regression guard — if a construct property is accidentally removed or changed (e.g.,
+KMS encryption dropped from DynamoDB, PITR disabled, CloudFront TLS downgraded),
+the test fails immediately at synthesis time rather than silently deploying an
+insecure template.
+
+Nag checks (AwsSolutionsChecks, ServerlessChecks, NIST80053R5Checks) are enforced
+here too: any unsuppressed cdk-nag finding causes synthesis to fail, making these
+tests a CI gate for infrastructure misconfigurations.
+
+Asset bundling (Docker) is skipped via the ``aws:cdk:bundling-stacks`` context key
+so these tests run without Docker.
+
+The ``aws_cdk`` package is only installed in the CDK check CI job, not in the
+regular unit-test environment. All tests in this module are skipped automatically
+when ``aws_cdk`` is not importable, so the standard ``pytest tests/unit`` run stays
+clean.
+"""
+
+import pytest
+
+aws_cdk = pytest.importorskip("aws_cdk", reason="aws_cdk not installed — skipping CDK stack tests")
+
+import aws_cdk as cdk
+from aws_cdk.assertions import Match, Template
+
+from hello_world.hello_world_frontend_stack import HelloWorldFrontendStack
+from hello_world.hello_world_stack import HelloWorldStack
+from hello_world.hello_world_waf_stack import HelloWorldWafStack
+
+# Fake account/region — synthesis does not make live AWS API calls
+_TEST_ACCOUNT = "123456789012"
+_TEST_REGION = "us-east-1"
+_TEST_ENV = cdk.Environment(account=_TEST_ACCOUNT, region=_TEST_REGION)
+_WAF_ENV = cdk.Environment(account=_TEST_ACCOUNT, region="us-east-1")
+
+# Skip Docker bundling so these tests run without Docker.
+# The CDK CLI and Python SDK both honour this context key during synthesis.
+_NO_BUNDLING = {"aws:cdk:bundling-stacks": []}
+
+
+# ── Session-scoped fixtures ───────────────────────────────────────────────────
+# Each stack is synthesized once per test session to keep the suite fast.
+
+
+@pytest.fixture(scope="module")
+def waf_template() -> Template:
+    """Synthesize HelloWorldWafStack and return its CloudFormation template."""
+    app = cdk.App(context=_NO_BUNDLING)
+    stack = HelloWorldWafStack(app, "TestWafStack", env=_WAF_ENV)
+    return Template.from_stack(stack)
+
+
+@pytest.fixture(scope="module")
+def backend_template() -> Template:
+    """Synthesize HelloWorldStack and return its CloudFormation template."""
+    app = cdk.App(context=_NO_BUNDLING)
+    stack = HelloWorldStack(app, "TestBackendStack", env=_TEST_ENV)
+    return Template.from_stack(stack)
+
+
+@pytest.fixture(scope="module")
+def frontend_template() -> Template:
+    """Synthesize HelloWorldFrontendStack and return its CloudFormation template."""
+    app = cdk.App(context=_NO_BUNDLING)
+    waf = HelloWorldWafStack(app, "TestFrontendWaf", env=_WAF_ENV)
+    backend = HelloWorldStack(app, "TestFrontendBackend", env=_TEST_ENV)
+    stack = HelloWorldFrontendStack(
+        app,
+        "TestFrontendStack",
+        api_url=backend.api_url,
+        waf_acl_arn=waf.web_acl_arn,
+        env=_TEST_ENV,
+        cross_region_references=True,
+    )
+    return Template.from_stack(stack)
+
+
+# ── WAF stack ─────────────────────────────────────────────────────────────────
+
+
+class TestWafStack:
+    def test_webacl_is_cloudfront_scoped(self, waf_template: Template) -> None:
+        waf_template.has_resource_properties("AWS::WAFv2::WebACL", {"Scope": "CLOUDFRONT"})
+
+    def test_logging_configuration_exists(self, waf_template: Template) -> None:
+        waf_template.resource_count_is("AWS::WAFv2::LoggingConfiguration", 1)
+
+    def test_kms_key_has_rotation_enabled(self, waf_template: Template) -> None:
+        waf_template.has_resource_properties("AWS::KMS::Key", {"EnableKeyRotation": True})
+
+    def test_log_group_has_kms_encryption(self, waf_template: Template) -> None:
+        waf_template.has_resource_properties(
+            "AWS::Logs::LogGroup",
+            {"KmsKeyId": Match.any_value(), "RetentionInDays": Match.any_value()},
+        )
+
+    def test_webacl_has_rate_limiting_rule(self, waf_template: Template) -> None:
+        waf_template.has_resource_properties(
+            "AWS::WAFv2::WebACL",
+            {"Rules": Match.array_with([Match.object_like({"Name": "RateLimitPerIP"})])},
+        )
+
+    def test_webacl_has_managed_rule_sets(self, waf_template: Template) -> None:
+        waf_template.has_resource_properties(
+            "AWS::WAFv2::WebACL",
+            {
+                "Rules": Match.array_with(
+                    [
+                        Match.object_like({"Name": "AWSManagedRulesAmazonIpReputationList"}),
+                        Match.object_like({"Name": "AWSManagedRulesCommonRuleSet"}),
+                        Match.object_like({"Name": "AWSManagedRulesKnownBadInputsRuleSet"}),
+                        Match.object_like({"Name": "AWSManagedRulesAnonymousIpList"}),
+                    ]
+                )
+            },
+        )
+
+    def test_stack_outputs_exist(self, waf_template: Template) -> None:
+        waf_template.has_output("WebAclArn", {})
+        waf_template.has_output("WebAclId", {})
+        waf_template.has_output("WafLogGroupName", {})
+
+
+# ── Backend stack ─────────────────────────────────────────────────────────────
+
+
+class TestBackendStack:
+    def test_kms_key_has_rotation_enabled(self, backend_template: Template) -> None:
+        backend_template.has_resource_properties("AWS::KMS::Key", {"EnableKeyRotation": True})
+
+    def test_dynamodb_has_pitr_enabled(self, backend_template: Template) -> None:
+        backend_template.has_resource_properties(
+            "AWS::DynamoDB::Table",
+            {"PointInTimeRecoverySpecification": {"PointInTimeRecoveryEnabled": True}},
+        )
+
+    def test_dynamodb_has_kms_encryption(self, backend_template: Template) -> None:
+        backend_template.has_resource_properties(
+            "AWS::DynamoDB::Table",
+            {"SSESpecification": {"SSEEnabled": True}},
+        )
+
+    def test_lambda_has_active_tracing(self, backend_template: Template) -> None:
+        backend_template.has_resource_properties(
+            "AWS::Lambda::Function",
+            {"TracingConfig": {"Mode": "Active"}, "MemorySize": 256},
+        )
+
+    def test_api_gateway_cache_cluster_disabled(self, backend_template: Template) -> None:
+        # Cache cluster is intentionally disabled for cost (~$14/mo for the smallest size)
+        # and to avoid serving stale values across SSM/AppConfig changes — see the
+        # NIST.800.53.R5-APIGWCacheEnabledAndEncrypted suppression in HelloWorldStack.
+        stages = backend_template.find_resources("AWS::ApiGateway::Stage")
+        for stage in stages.values():
+            assert stage["Properties"].get("CacheClusterEnabled") is not True
+
+    def test_log_groups_have_kms_encryption(self, backend_template: Template) -> None:
+        backend_template.has_resource_properties(
+            "AWS::Logs::LogGroup",
+            {"KmsKeyId": Match.any_value(), "RetentionInDays": Match.any_value()},
+        )
+
+    def test_stack_outputs_exist(self, backend_template: Template) -> None:
+        backend_template.has_output("HelloWorldApiOutput", {})
+        backend_template.has_output("HelloWorldFunctionOutput", {})
+        backend_template.has_output("IdempotencyTableName", {})
+        backend_template.has_output("GreetingParameterName", {})
+        backend_template.has_output("CloudWatchDashboardUrl", {})
+
+
+# ── Frontend stack ────────────────────────────────────────────────────────────
+
+
+class TestFrontendStack:
+    def test_kms_key_has_rotation_enabled(self, frontend_template: Template) -> None:
+        frontend_template.has_resource_properties("AWS::KMS::Key", {"EnableKeyRotation": True})
+
+    def test_frontend_bucket_has_kms_encryption(self, frontend_template: Template) -> None:
+        frontend_template.has_resource_properties(
+            "AWS::S3::Bucket",
+            {
+                "BucketEncryption": {
+                    "ServerSideEncryptionConfiguration": Match.array_with(
+                        [Match.object_like({"ServerSideEncryptionByDefault": {"SSEAlgorithm": "aws:kms"}})]
+                    )
+                }
+            },
+        )
+
+    def test_access_log_bucket_uses_s3_managed_encryption(self, frontend_template: Template) -> None:
+        # Access log bucket must use SSE-S3 (S3 log delivery cannot write to KMS-encrypted targets)
+        frontend_template.has_resource_properties(
+            "AWS::S3::Bucket",
+            {
+                "BucketEncryption": {
+                    "ServerSideEncryptionConfiguration": Match.array_with(
+                        [Match.object_like({"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}})]
+                    )
+                }
+            },
+        )
+
+    def test_cloudfront_has_waf_attached(self, frontend_template: Template) -> None:
+        # WebACLId is set from the WAF stack — confirms cross-stack wiring is intact
+        frontend_template.has_resource_properties(
+            "AWS::CloudFront::Distribution",
+            {"DistributionConfig": {"WebACLId": Match.any_value()}},
+        )
+
+    def test_cloudfront_redirects_http_to_https(self, frontend_template: Template) -> None:
+        frontend_template.has_resource_properties(
+            "AWS::CloudFront::Distribution",
+            {"DistributionConfig": {"DefaultCacheBehavior": {"ViewerProtocolPolicy": "redirect-to-https"}}},
+        )
+
+    def test_three_s3_buckets_exist(self, frontend_template: Template) -> None:
+        # FrontendBucket + FrontendAccessLogBucket + CloudTrailLogsBucket
+        frontend_template.resource_count_is("AWS::S3::Bucket", 3)
+
+    def test_stack_outputs_exist(self, frontend_template: Template) -> None:
+        frontend_template.has_output("CloudFrontDomainName", {})
+        frontend_template.has_output("CloudFrontDistributionId", {})
+        frontend_template.has_output("FrontendBucketName", {})
+
+
+# ── Logical ID stability for stateful resources ───────────────────────────────
+# CDK best practice: never let the logical ID of a stateful resource drift.
+# A changed logical ID makes CloudFormation replace the resource — which for
+# a DynamoDB table, S3 bucket, KMS key, or CloudFront distribution means data
+# loss, downtime, or both. These tests lock in the current logical IDs so any
+# refactor that would silently rename one (e.g., moving a construct, renaming
+# a variable) fails at test time instead of at deploy time.
+#
+# If you genuinely need to change one of these IDs, use ``CfnResource.overrideLogicalId``
+# to preserve the old name, or accept replacement and update this test in the
+# same commit so the intent is reviewable.
+
+
+class TestLogicalIdStability:
+    """Lock in logical IDs of stateful resources — changing one replaces the resource."""
+
+    # ── Backend ────────────────────────────────────────────────────────────────
+
+    def test_backend_dynamodb_table_id(self, backend_template: Template) -> None:
+        assert "AppIdempotencyTable7A3F72D5" in backend_template.find_resources("AWS::DynamoDB::Table")
+
+    def test_backend_kms_key_id(self, backend_template: Template) -> None:
+        assert "AppEncryptionKey7F644894" in backend_template.find_resources("AWS::KMS::Key")
+
+    def test_backend_ssm_parameter_id(self, backend_template: Template) -> None:
+        assert "AppGreetingParameterD5E6E64F" in backend_template.find_resources("AWS::SSM::Parameter")
+
+    def test_backend_appconfig_application_id(self, backend_template: Template) -> None:
+        assert "AppFeatureFlagsAppD0EAAC11" in backend_template.find_resources("AWS::AppConfig::Application")
+
+    def test_backend_appconfig_environment_id(self, backend_template: Template) -> None:
+        assert "AppFeatureFlagsEnvBF21F0D3" in backend_template.find_resources("AWS::AppConfig::Environment")
+
+    def test_backend_appconfig_profile_id(self, backend_template: Template) -> None:
+        assert "AppFeatureFlagsProfile324F0464" in backend_template.find_resources(
+            "AWS::AppConfig::ConfigurationProfile"
+        )
+
+    def test_backend_log_group_ids(self, backend_template: Template) -> None:
+        log_groups = backend_template.find_resources("AWS::Logs::LogGroup")
+        assert "AppHelloWorldFunctionLogGroupD773BE34" in log_groups
+        assert "AppHelloWorldApiAccessLogsBAD11F8B" in log_groups
+        assert "AppHelloWorldApiExecutionLogsA5806940" in log_groups
+
+    # ── Frontend ───────────────────────────────────────────────────────────────
+
+    def test_frontend_kms_key_id(self, frontend_template: Template) -> None:
+        assert "FrontendEncryptionKey272BB0CA" in frontend_template.find_resources("AWS::KMS::Key")
+
+    def test_frontend_bucket_ids(self, frontend_template: Template) -> None:
+        buckets = frontend_template.find_resources("AWS::S3::Bucket")
+        assert "FrontendBucketEFE2E19C" in buckets
+        assert "FrontendAccessLogBucketD05E8E55" in buckets
+
+    def test_frontend_cloudfront_distribution_id(self, frontend_template: Template) -> None:
+        assert "Distribution830FAC52" in frontend_template.find_resources("AWS::CloudFront::Distribution")
+
+    # ── WAF ────────────────────────────────────────────────────────────────────
+
+    def test_waf_kms_key_id(self, waf_template: Template) -> None:
+        assert "WafEncryptionKeyB025E51A" in waf_template.find_resources("AWS::KMS::Key")
+
+    def test_waf_log_group_id(self, waf_template: Template) -> None:
+        assert "WafLogGroupDFDE65B0" in waf_template.find_resources("AWS::Logs::LogGroup")
+
+    def test_waf_webacl_id(self, waf_template: Template) -> None:
+        # L1 CfnWebACL — its logical ID is the construct_id with no hash suffix.
+        assert "WebACL" in waf_template.find_resources("AWS::WAFv2::WebACL")

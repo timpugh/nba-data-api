@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+
+      # Fails when the committed lambda/requirements.txt drifts from uv.lock.
+      # Dependabot's uv ecosystem regenerates pyproject.toml + uv.lock but does
+      # not know about the exported requirements file that PythonFunction bundles
+      # into the deployed Lambda — so without this check, a merged Dependabot PR
+      # could ship a Lambda built from stale pins. Fix by running `make lock`.
+      - name: Check lambda/requirements.txt is in sync with uv.lock
+        run: |
+          uv export --only-group lambda --no-emit-project --no-header --format requirements.txt -o /tmp/expected-requirements.txt
+          if ! diff -q /tmp/expected-requirements.txt lambda/requirements.txt > /dev/null; then
+            echo "::error::lambda/requirements.txt is out of sync with uv.lock. Run 'make lock' locally and commit the result."
+            diff /tmp/expected-requirements.txt lambda/requirements.txt || true
+            exit 1
+          fi
+
+      - name: Install CDK + lint + docs (and test for pytest plugins referenced by configs)
+        run: uv sync --locked --group cdk --group test --group lint --group docs
+
+      - name: Run pre-commit hooks
+        run: uv run pre-commit run --all-files
+
+      - name: Prune uv cache
+        run: uv cache prune --ci
+
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Install Lambda runtime + test runner
+        run: uv sync --locked --only-group lambda --only-group test
+
+      - name: Run unit tests
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+        run: uv run pytest tests/unit -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: coverage-report
+          path: report.html
+
+      - name: Prune uv cache
+        run: uv cache prune --ci
+
+  cdk-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: "22"
+
+      - name: Install CDK + test runner
+        run: uv sync --locked --group cdk --group test
+
+      - name: Install CDK CLI
+        run: npm install -g aws-cdk
+
+      # CDK's PythonFunction bundling pulls public.ecr.aws/sam/build-python3.13
+      # for the Lambda function's architecture. The Lambda runs on arm64
+      # (Graviton), but ubuntu-latest runners are amd64 — without QEMU's
+      # binfmt_misc handlers registered, executing the arm64 bundling container
+      # fails with `exec /bin/sh: exec format error`. The setup-qemu-action
+      # registers the arm64 handler so Docker can run the cross-arch image.
+      - uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4.0.0
+        with:
+          platforms: linux/arm64
+
+      # The '**' glob is required to descend into Stage-nested stacks. Without
+      # it, `cdk synth` only synthesizes the top-level App (which contains the
+      # Stage but no stacks directly), so cdk-nag never runs against the actual
+      # WAF/backend/frontend stacks and any unsuppressed findings silently pass
+      # CI. `make cdk-synth` already uses the same glob — this aligns the
+      # CI gate with what runs locally.
+      - name: Run cdk synth
+        env:
+          CDK_DEFAULT_ACCOUNT: "123456789012"
+          CDK_DEFAULT_REGION: us-east-1
+          AWS_DEFAULT_REGION: us-east-1
+        run: cdk synth '**' --quiet
+
+      - name: Run CDK stack assertion tests
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+        run: uv run pytest tests/cdk -v --override-ini="addopts=" --timeout=120
+
+      - name: Prune uv cache
+        run: uv cache prune --ci

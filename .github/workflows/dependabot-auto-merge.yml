@@ -1,0 +1,81 @@
+name: Dependabot Auto-merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    # Gate on the PR's *author*, not the latest event's actor. github.actor is
+    # whoever triggered the most recent run — when a maintainer pushes a fix to
+    # a Dependabot branch (e.g. `make lock` after the lambda/requirements.txt
+    # drift gate fails), the actor flips to that human and the whole job
+    # silently skips. The PR's user.login stays pinned to the original opener,
+    # so this condition keeps the auto-merge eligible across follow-up pushes.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
+        with:
+          # The default refuses when the latest commit isn't signed by
+          # Dependabot's GPG key. That's the right default in isolation, but
+          # it breaks the maintainer-push flow this repo relies on: the
+          # `make deps-merge` script (and its manual equivalent) force-pushes
+          # `make lock` regenerations onto Dependabot branches, and those
+          # commits are signed by the maintainer, not Dependabot. The job
+          # is already gated on `pull_request.user.login == dependabot[bot]`,
+          # which protects the PR author identity. Skipping the
+          # commit-signature check here trades one layer of belt-and-braces
+          # for the ability to ship the maintainer-push workflow at all.
+          skip-commit-verification: true
+
+      # Auto-merge is restricted to patch and minor GitHub Actions bumps.
+      # Majors (v4 → v5) can contain breaking input/output changes and carry
+      # enough review surface to warrant a human look — same reasoning GitGuardian
+      # gives in 'Renovate & Dependabot: the new malware delivery system'.
+      # The update-type strings come from dependabot/fetch-metadata outputs.
+      - name: Approve and auto-merge patch/minor GitHub Actions updates
+        if: |
+          steps.metadata.outputs.package-ecosystem == 'github_actions' &&
+          (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+           steps.metadata.outputs.update-type == 'version-update:semver-minor')
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same patch/minor scope as the GitHub Actions step above. Majors stay
+      # manual because cooldowns catch malicious releases but not intentional
+      # API breaks (aws-cdk synthesis changes, aws-lambda-powertools middleware
+      # rewrites, boto deprecated method removals).
+      #
+      # Both `uv` and `pip` ecosystem values match — Dependabot's `uv`
+      # ecosystem reports `package-ecosystem: pip` in fetch-metadata output
+      # because uv builds on pip's resolver, so the metadata action sees the
+      # underlying tool rather than the configured ecosystem. Accept either
+      # so PRs from this repo's uv config (which file under dependabot/pip/*
+      # head refs) are auto-merged the same as a hypothetical pip config.
+      #
+      # For updates that touch the lambda runtime group (boto*, aws-lambda-
+      # powertools, etc.), CI's drift check on lambda/requirements.txt will
+      # fail and the PR will sit with auto-merge armed. Run `make lock` locally
+      # on the PR branch and push — CI re-runs, passes, and GitHub merges.
+      - name: Approve and auto-merge patch/minor Python (uv/pip) updates
+        if: |
+          (steps.metadata.outputs.package-ecosystem == 'uv' ||
+           steps.metadata.outputs.package-ecosystem == 'pip') &&
+          (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+           steps.metadata.outputs.update-type == 'version-update:semver-minor')
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

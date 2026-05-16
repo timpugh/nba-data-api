@@ -1,0 +1,62 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+
+      # The OpenAPI generator imports lambda/app.py (needs Powertools) and
+      # Zensical is in the docs group (installed in .venv). Install both
+      # environments so each step runs in the one that has its imports.
+      - name: Install Lambda env (for OpenAPI generation)
+        run: UV_PROJECT_ENVIRONMENT=.venv-lambda uv sync --only-group lambda --only-group test
+
+      - name: Install CDK env (for Zensical build)
+        run: uv sync --group cdk --group docs
+
+      - name: Generate OpenAPI spec
+        run: UV_PROJECT_ENVIRONMENT=.venv-lambda uv run python scripts/generate_openapi.py
+
+      - name: Build docs
+        run: uv run zensical build
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0

@@ -1,0 +1,106 @@
+repos:
+  # Every linter that has a pyproject.toml pin runs as a local `language: system`
+  # hook so its version comes from the project venv (managed by uv from
+  # pyproject.toml). Single source of truth — Dependabot's pre-commit ecosystem
+  # bumps the `rev:` field on remote hooks but never the `additional_dependencies`
+  # list, so any tool pinned in both places would drift silently between
+  # ecosystem run cycles. Sourcing from the venv eliminates the drift surface.
+  - repo: local
+    hooks:
+      # Format first, then lint --fix. Per ruff's own recommendation: running
+      # the linter's auto-fixer after the formatter avoids a class of churn
+      # where the fixer rewrites code into a shape the formatter immediately
+      # rewrites again, forcing pre-commit to take a second pass.
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format --force-exclude
+        language: system
+        types: [python]
+      - id: ruff
+        name: ruff lint
+        entry: ruff check --fix --force-exclude
+        language: system
+        types: [python]
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy type checks
+        # Runs from the project venv (managed by uv from pyproject.toml) so
+        # mypy + boto3-stubs + aws-cdk-lib stay in lockstep with the rest of
+        # the project. Previous configuration used mirrors-mypy with an
+        # additional_dependencies block — Dependabot's pre-commit ecosystem
+        # only bumps `rev:` lines, not additional_dependencies, so those pins
+        # drifted silently from pyproject.toml. Sourcing them from the venv
+        # eliminates the drift surface entirely.
+        entry: mypy
+        language: system
+        types: [python]
+        args: [--ignore-missing-imports]
+        # By default pre-commit forks the hook across several worker processes
+        # (one per CPU) and partitions files between them. mypy 1.20+ uses an
+        # SQLite-backed incremental cache (.mypy_cache/<py>/cache.db) and the
+        # parallel workers hit it concurrently — on 2-CPU CI runners they
+        # deterministically lock-contend and one process crashes with
+        # `OperationalError: database is locked`, which mypy reports as
+        # INTERNAL ERROR. Local 8+ CPU machines retry the lock fast enough
+        # that the symptom hides. require_serial=true forces pre-commit to
+        # run mypy in a single worker, so cache access is sequential and the
+        # lock never contends.
+        require_serial: true
+        # scripts/generate_openapi.py imports from lambda/app.py (Powertools),
+        # which conflicts with aws-cdk-lib on `attrs`. Pre-commit hooks run
+        # in .venv (CDK side); scripts/ is checked via `make typecheck`
+        # inside .venv-lambda instead.
+        exclude: ^(app\.py|tests/|docs/|scripts/)
+
+  - repo: local
+    hooks:
+      - id: bandit
+        name: bandit security checks
+        entry: bandit -c .bandit
+        language: system
+        types: [python]
+
+  - repo: local
+    hooks:
+      - id: pylint
+        name: pylint design checks
+        entry: pylint
+        language: system
+        types: [python]
+        exclude: ^(tests|docs)/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      # Safety nets added for v1.0 — all zero-config, near-zero runtime.
+      - id: check-toml                     # validates pyproject.toml syntax
+      - id: detect-private-key             # blocks accidental SSH / TLS key commits
+      - id: check-merge-conflict           # blocks unresolved <<<<<<< markers
+      - id: check-added-large-files        # blocks committing large binaries
+      - id: check-executables-have-shebangs # catches missing shebangs (scripts/deps_merge.sh, etc.)
+
+  - repo: local
+    hooks:
+      - id: xenon
+        name: xenon complexity check
+        entry: xenon --max-absolute B --max-modules A --max-average A lambda/ hello_world/
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: pip-audit
+        name: pip-audit vulnerability scan
+        # Both CVEs affect pip 26.0.1 (the version uv ships into the build env).
+        # CVE-2026-3219 has no upstream fix as of 2026-04. CVE-2026-6357 has
+        # a fix in pip 26.1 but is unreachable until uv ships a build pinning
+        # the patched pip. Revisit this list when uv publishes a release that
+        # bundles pip >= 26.1.
+        entry: pip-audit --ignore-vuln CVE-2026-3219 --ignore-vuln CVE-2026-6357
+        language: system
+        pass_filenames: false
+        always_run: true
