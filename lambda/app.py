@@ -9,12 +9,17 @@ Data Classes.
 """
 
 import os
+from decimal import Decimal
 from typing import Any, cast
 
+import boto3
 from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.event_handler import APIGatewayRestResolver
 from aws_lambda_powertools.event_handler.api_gateway import CORSConfig
-from aws_lambda_powertools.event_handler.exceptions import InternalServerError
+from aws_lambda_powertools.event_handler.exceptions import (
+    InternalServerError,
+    NotFoundError,
+)
 from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.data_classes import APIGatewayProxyEvent
 from aws_lambda_powertools.utilities.feature_flags import AppConfigStore, FeatureFlags
@@ -107,6 +112,12 @@ feature_flags = FeatureFlags(store=app_config_store)
 # misconfiguration rather than letting boto3 reject an empty key at runtime.
 GREETING_PARAM_NAME = _require_env("GREETING_PARAM_NAME")
 
+# NBA player table — schema documented in docs/dynamodb_schema.md.
+# Reused across requests; boto3 client instantiation outside the handler keeps
+# warm containers free of repeated connection setup.
+NBA_TABLE_NAME = _require_env("NBA_TABLE_NAME")
+_nba_table = boto3.resource("dynamodb").Table(NBA_TABLE_NAME)
+
 
 class HelloResponse(BaseModel):
     """Response body for GET /hello."""
@@ -116,6 +127,63 @@ class HelloResponse(BaseModel):
         description="Greeting from SSM Parameter Store, optionally suffixed when the enhanced_greeting flag is on.",
         examples=["hello world", "hello world - enhanced mode enabled"],
     )
+
+
+class PlayerSeasonStats(BaseModel):
+    """Per-season aggregate stats for one player.
+
+    Mirrors the SEASON#<yyyy-yy> item layout — see docs/dynamodb_schema.md
+    for the source CSV columns and storage keys.
+    """
+
+    season: str = Field(..., examples=["2022-23"])
+    team_abbreviation: str = Field(..., examples=["HOU"])
+    age: int | None = None
+    player_height_cm: float | None = None
+    player_weight_kg: float | None = None
+    gp: int | None = Field(default=None, description="Games played")
+    pts: float | None = Field(default=None, description="Points per game")
+    reb: float | None = Field(default=None, description="Rebounds per game")
+    ast: float | None = Field(default=None, description="Assists per game")
+    net_rating: float | None = None
+    oreb_pct: float | None = None
+    dreb_pct: float | None = None
+    usg_pct: float | None = None
+    ts_pct: float | None = None
+    ast_pct: float | None = None
+
+
+class PlayerResponse(BaseModel):
+    """Response body for GET /players/{id} — profile + every season on file."""
+
+    player_id: str = Field(..., description="Stable UUIDv5 derived from name + draft data")
+    player_name: str
+    college: str | None = None
+    country: str | None = None
+    draft_year: int | None = None
+    draft_round: int | None = None
+    draft_number: int | None = None
+    seasons: list[PlayerSeasonStats]
+
+
+class PlayerSummary(BaseModel):
+    """Lightweight player entry used by GET /players for client-side search."""
+
+    player_id: str
+    player_name: str
+    draft_year: int | None = None
+
+
+class PlayerListResponse(BaseModel):
+    """Response body for GET /players — all profile rows in one payload.
+
+    Returned in a single response (no pagination cursor) because the dataset
+    is bounded at ~2,551 players. If the catalog grows beyond a few thousand
+    rows, switch to a cursor-based pattern and add an ``after`` query param.
+    """
+
+    players: list[PlayerSummary]
+    count: int
 
 
 @app.get(
@@ -196,6 +264,148 @@ def hello() -> HelloResponse:
         message = greeting
 
     return HelloResponse(message=message)
+
+
+def _to_float(value: Any) -> float | None:
+    """Coerce a DynamoDB numeric (Decimal) attribute into a float, or pass through None.
+
+    DDB returns Decimal for every Number attribute; Pydantic accepts Decimal
+    for ``float`` fields but the conversion clutters response payloads and
+    interacts poorly with JSON serialization at the API Gateway edge. Casting
+    here keeps the wire format consistent.
+    """
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    return float(value)
+
+
+@app.get(
+    "/players",
+    summary="List every player in the dataset",
+    description=(
+        "Returns a lightweight summary (id, name, draft year) for every "
+        "player profile. Used by the frontend to populate a client-side "
+        "search index — a single round-trip avoids per-keystroke API calls. "
+        "Paginates internally through GSI2 partition ``PLAYERS#ALL`` so the "
+        "full set comes back regardless of DynamoDB's 1 MB Query page limit."
+    ),
+    response_description="All players sorted alphabetically by lowercased name.",
+    tags=["Players"],
+)
+@tracer.capture_method
+def list_players() -> PlayerListResponse:
+    """Handle GET /players."""
+    metrics.add_metric(name="ListPlayersRequests", unit=MetricUnit.Count, value=1)
+
+    players: list[PlayerSummary] = []
+    last_key: dict[str, Any] | None = None
+    try:
+        while True:
+            kwargs: dict[str, Any] = {
+                "IndexName": "gsi2-by-season",
+                "KeyConditionExpression": "GSI2PK = :pk",
+                "ExpressionAttributeValues": {":pk": "PLAYERS#ALL"},
+                "ProjectionExpression": "player_id, player_name, draft_year",
+            }
+            if last_key:
+                kwargs["ExclusiveStartKey"] = last_key
+            page = _nba_table.query(**kwargs)
+            for item in page.get("Items", []):
+                players.append(
+                    PlayerSummary(
+                        player_id=item["player_id"],
+                        player_name=item["player_name"],
+                        draft_year=item.get("draft_year"),
+                    )
+                )
+            last_key = page.get("LastEvaluatedKey")
+            if not last_key:
+                break
+    except Exception as exc:
+        logger.exception("DynamoDB query failed for list_players")
+        raise InternalServerError("Failed to list players") from exc
+
+    return PlayerListResponse(players=players, count=len(players))
+
+
+@app.get(
+    "/players/<player_id>",
+    summary="Get a player's profile and full season history",
+    description=(
+        "Returns the stable profile (name, college, draft info) plus every "
+        "season the player appears in the dataset, ordered oldest-first. "
+        "Returns 404 when no profile row exists for the given ID."
+    ),
+    response_description="Player profile with embedded list of season stats.",
+    tags=["Players"],
+)
+@tracer.capture_method
+def get_player(player_id: str) -> PlayerResponse:
+    """Handle GET /players/{id}.
+
+    One Query against the base table partition ``PLAYER#<id>`` returns the
+    profile row plus every season row in a single round-trip. Cheaper than
+    a separate GetItem(profile) + Query(seasons), and the items already sort
+    naturally (``PROFILE`` < ``SEASON#...``).
+    """
+    metrics.add_metric(name="GetPlayerRequests", unit=MetricUnit.Count, value=1)
+    logger.info("get_player requested", player_id=player_id)
+
+    pk = f"PLAYER#{player_id}"
+    try:
+        result = _nba_table.query(
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": pk},
+        )
+    except Exception as exc:
+        logger.exception("DynamoDB query failed", player_id=player_id)
+        raise InternalServerError("Failed to fetch player") from exc
+
+    items: list[dict[str, Any]] = result.get("Items", [])
+    profile_row: dict[str, Any] | None = None
+    season_rows: list[dict[str, Any]] = []
+    for item in items:
+        if item.get("SK") == "PROFILE":
+            profile_row = item
+        else:
+            season_rows.append(item)
+
+    if profile_row is None:
+        raise NotFoundError
+
+    season_rows.sort(key=lambda r: r["SK"])
+
+    return PlayerResponse(
+        player_id=profile_row["player_id"],
+        player_name=profile_row["player_name"],
+        college=profile_row.get("college") or None,
+        country=profile_row.get("country") or None,
+        draft_year=profile_row.get("draft_year"),
+        draft_round=profile_row.get("draft_round"),
+        draft_number=profile_row.get("draft_number"),
+        seasons=[
+            PlayerSeasonStats(
+                season=row["season"],
+                team_abbreviation=row["team_abbreviation"],
+                age=row.get("age"),
+                player_height_cm=_to_float(row.get("player_height_cm")),
+                player_weight_kg=_to_float(row.get("player_weight_kg")),
+                gp=row.get("gp"),
+                pts=_to_float(row.get("pts")),
+                reb=_to_float(row.get("reb")),
+                ast=_to_float(row.get("ast")),
+                net_rating=_to_float(row.get("net_rating")),
+                oreb_pct=_to_float(row.get("oreb_pct")),
+                dreb_pct=_to_float(row.get("dreb_pct")),
+                usg_pct=_to_float(row.get("usg_pct")),
+                ts_pct=_to_float(row.get("ts_pct")),
+                ast_pct=_to_float(row.get("ast_pct")),
+            )
+            for row in season_rows
+        ],
+    )
 
 
 @idempotent(config=idempotency_config, persistence_store=persistence_layer)

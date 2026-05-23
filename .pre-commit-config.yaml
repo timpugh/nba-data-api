@@ -83,6 +83,11 @@ repos:
       - id: detect-private-key             # blocks accidental SSH / TLS key commits
       - id: check-merge-conflict           # blocks unresolved <<<<<<< markers
       - id: check-added-large-files        # blocks committing large binaries
+        # 2 MB cap accommodates data/NBA_Player_Data.csv (~1.6 MB) — the
+        # importer's single source of truth, committed for reproducible
+        # builds per the project's "commit the CSV under data/" choice.
+        # Raise further only when you have a similarly clear justification.
+        args: [--maxkb=2000]
       - id: check-executables-have-shebangs # catches missing shebangs (scripts/deps_merge.sh, etc.)
 
   - repo: local

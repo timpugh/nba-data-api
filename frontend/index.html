@@ -5,72 +5,394 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="alternate icon" type="image/x-icon" href="/favicon.ico" />
-  <title>Hello World</title>
+  <title>NBA Player Data</title>
   <style>
+    :root {
+      --bg: #fbfbfd;
+      --surface: #ffffff;
+      --ink-1: #1d1d1f;
+      --ink-2: #515154;
+      --ink-3: #86868b;
+      --hairline: #d2d2d7;
+      --hairline-soft: #e8e8ed;
+      --accent: #0071e3;
+      --accent-hover: #0077ed;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+      --shadow-md: 0 4px 16px rgba(0,0,0,0.06);
+      --shadow-lg: 0 14px 60px rgba(0,0,0,0.12);
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
+      --max-width: 980px;
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    html { scroll-behavior: smooth; }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f5f5f5;
+      font-family: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont,
+                   "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-weight: 400;
+      color: var(--ink-1);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      line-height: 1.5;
+      letter-spacing: -0.003em;
+    }
+
+    /* ── Layout containers ──────────────────────────────────────────────── */
+
+    main { max-width: var(--max-width); margin: 0 auto; padding: 0 22px; }
+
+    .view { display: none; }
+    .view.active { display: block; animation: fade-in 0.24s ease-out; }
+    @keyframes fade-in {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Hero / search view ─────────────────────────────────────────────── */
+
+    .hero {
+      text-align: center;
+      padding: 120px 0 36px;
+    }
+    h1 {
+      font-size: clamp(40px, 6vw, 64px);
+      font-weight: 600;
+      letter-spacing: -0.025em;
+      line-height: 1.05;
+      color: var(--ink-1);
+      margin-bottom: 18px;
+    }
+    h1 .grad {
+      background: linear-gradient(120deg, #0071e3 0%, #c850c0 50%, #ff6b35 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .lede {
+      font-size: 19px;
+      color: var(--ink-2);
+      max-width: 580px;
+      margin: 0 auto 40px;
+      letter-spacing: -0.012em;
+    }
+
+    .search-shell {
+      position: relative;
+      max-width: 580px;
+      margin: 0 auto;
+    }
+    .search-input {
+      width: 100%;
+      font-family: inherit;
+      font-size: 17px;
+      color: var(--ink-1);
+      background: var(--surface);
+      border: 1px solid var(--hairline);
+      border-radius: 999px;
+      padding: 17px 24px 17px 52px;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease;
+      box-shadow: var(--shadow-sm);
+      outline: none;
+      letter-spacing: -0.01em;
+    }
+    .search-input::placeholder { color: var(--ink-3); }
+    .search-input:hover { border-color: #b8b8be; }
+    .search-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px rgba(0,113,227,0.12);
+    }
+    .search-icon {
+      position: absolute;
+      top: 50%;
+      left: 22px;
+      transform: translateY(-50%);
+      color: var(--ink-3);
+      pointer-events: none;
+    }
+
+    /* ── Results dropdown ───────────────────────────────────────────────── */
+
+    .results {
+      max-width: 580px;
+      margin: 14px auto 0;
+      background: var(--surface);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+      max-height: 0;
+      transition: max-height 0.24s ease, opacity 0.24s ease;
+      opacity: 0;
+    }
+    .results.open {
+      max-height: 420px;
+      opacity: 1;
+      overflow-y: auto;
+    }
+    .results-empty, .results-loading {
+      padding: 22px 24px;
+      color: var(--ink-3);
+      font-size: 15px;
+      text-align: center;
+    }
+    .result-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 12px 22px;
+      cursor: pointer;
+      transition: background 0.12s;
+      border-bottom: 1px solid var(--hairline-soft);
+    }
+    .result-row:last-child { border-bottom: none; }
+    .result-row:hover, .result-row.focused { background: #f5f5f7; }
+    .result-avatar {
+      width: 36px; height: 36px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #f5f5f7, #e8e8ed);
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: 100vh;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink-2);
+      flex-shrink: 0;
     }
-
-    .card {
-      background: #fff;
-      border-radius: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
-      padding: 48px 56px;
-      text-align: center;
-      max-width: 480px;
-      width: 100%;
-    }
-
-    h1 { font-size: 1.5rem; color: #111; margin-bottom: 8px; }
-    p.subtitle { color: #666; font-size: 0.95rem; margin-bottom: 32px; }
-
-    button {
-      background: #232f3e;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 12px 28px;
-      font-size: 1rem;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    button:hover { background: #374151; }
-    button:disabled { background: #9ca3af; cursor: not-allowed; }
-
-    .response {
-      margin-top: 28px;
-      padding: 16px 20px;
-      border-radius: 8px;
-      font-size: 1.1rem;
+    .result-name {
+      font-size: 15px;
       font-weight: 500;
-      display: none;
+      color: var(--ink-1);
+      letter-spacing: -0.012em;
     }
-    .response.success { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
-    .response.error   { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+    .result-meta {
+      font-size: 12px;
+      color: var(--ink-3);
+      margin-top: 1px;
+    }
+    .result-name mark {
+      background: rgba(0,113,227,0.14);
+      color: var(--ink-1);
+      padding: 0 1px;
+      border-radius: 2px;
+    }
 
-    .spinner {
-      display: none;
-      width: 20px; height: 20px;
-      border: 2px solid #e5e7eb;
-      border-top-color: #6b7280;
+    /* ── Detail view ────────────────────────────────────────────────────── */
+
+    .back {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      color: var(--accent);
+      cursor: pointer;
+      padding: 28px 0 8px;
+      user-select: none;
+    }
+    .back:hover { color: var(--accent-hover); }
+
+    .player-hero {
+      background: var(--surface);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-md);
+      padding: 44px 48px;
+      margin: 16px 0 28px;
+    }
+    .player-hero h2 {
+      font-size: 48px;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+      line-height: 1.05;
+      color: var(--ink-1);
+    }
+    .player-hero .player-meta {
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .pill {
+      font-size: 13px;
+      color: var(--ink-2);
+      background: #f5f5f7;
+      padding: 5px 12px;
+      border-radius: 999px;
+      letter-spacing: -0.005em;
+    }
+    .pill strong {
+      font-weight: 600;
+      color: var(--ink-1);
+      margin-left: 4px;
+    }
+
+    .career-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 1px;
+      margin-top: 28px;
+      background: var(--hairline-soft);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+    }
+    .career-summary .stat {
+      background: var(--surface);
+      padding: 16px 20px;
+      text-align: left;
+    }
+    .career-summary .stat-label {
+      font-size: 11px;
+      color: var(--ink-3);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-weight: 500;
+    }
+    .career-summary .stat-value {
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--ink-1);
+      letter-spacing: -0.018em;
+      margin-top: 4px;
+      line-height: 1.1;
+    }
+    .career-summary .stat-sub {
+      font-size: 11px;
+      color: var(--ink-3);
+      margin-top: 2px;
+    }
+
+    /* ── Season table ───────────────────────────────────────────────────── */
+
+    .seasons-card {
+      background: var(--surface);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-md);
+      overflow: hidden;
+    }
+    .seasons-card-head {
+      padding: 22px 28px 14px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+    }
+    .seasons-card-head h3 {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.018em;
+    }
+    .seasons-card-head .count {
+      font-size: 13px;
+      color: var(--ink-3);
+    }
+    table.seasons {
+      width: 100%;
+      border-collapse: collapse;
+      font-feature-settings: "tnum" 1;
+    }
+    table.seasons thead th {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--ink-3);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      text-align: right;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--hairline-soft);
+      cursor: pointer;
+      user-select: none;
+      transition: color 0.12s;
+    }
+    table.seasons thead th:first-child { text-align: left; padding-left: 28px; }
+    table.seasons thead th:last-child  { padding-right: 28px; }
+    table.seasons thead th:hover { color: var(--ink-1); }
+    table.seasons thead th .arrow {
+      display: inline-block;
+      width: 8px;
+      margin-left: 4px;
+      opacity: 0;
+      transition: opacity 0.12s;
+    }
+    table.seasons thead th.sorted .arrow { opacity: 1; }
+    table.seasons tbody td {
+      padding: 14px 16px;
+      font-size: 14px;
+      color: var(--ink-1);
+      border-bottom: 1px solid var(--hairline-soft);
+      text-align: right;
+      letter-spacing: -0.006em;
+    }
+    table.seasons tbody td:first-child {
+      text-align: left;
+      padding-left: 28px;
+      font-weight: 500;
+    }
+    table.seasons tbody td:last-child { padding-right: 28px; }
+    table.seasons tbody tr:last-child td { border-bottom: none; }
+    table.seasons tbody tr:hover td { background: #fafafc; }
+    .team-tag {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--ink-2);
+      background: #f5f5f7;
+      padding: 3px 7px;
+      border-radius: 5px;
+      letter-spacing: 0.02em;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+
+    /* ── Loading / skeletons ────────────────────────────────────────────── */
+
+    .skel {
+      background: linear-gradient(90deg, #f5f5f7 0%, #eaeaef 50%, #f5f5f7 100%);
+      background-size: 200% 100%;
+      animation: skel-shimmer 1.4s ease-in-out infinite;
+      border-radius: 4px;
+    }
+    @keyframes skel-shimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    .detail-loading {
+      padding: 80px 0;
+      text-align: center;
+      color: var(--ink-3);
+    }
+    .detail-loading .spin {
+      display: inline-block;
+      width: 22px; height: 22px;
+      border: 2px solid var(--hairline-soft);
+      border-top-color: var(--accent);
       border-radius: 50%;
-      animation: spin 0.6s linear infinite;
-      margin: 20px auto 0;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 14px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Responsive ─────────────────────────────────────────────────────── */
+
+    @media (max-width: 640px) {
+      .hero { padding: 56px 0 24px; }
+      .player-hero { padding: 28px 24px; }
+      .player-hero h2 { font-size: 34px; }
+      .seasons-card-head { padding: 18px 18px 10px; }
+      table.seasons thead th { padding: 10px 8px; font-size: 10px; }
+      table.seasons tbody td { padding: 12px 8px; font-size: 13px; }
+      table.seasons thead th:first-child,
+      table.seasons tbody td:first-child { padding-left: 18px; }
+      table.seasons thead th:last-child,
+      table.seasons tbody td:last-child { padding-right: 18px; }
+      /* Hide percent columns on narrow screens — keep season, team, GP, PTS, REB, AST */
+      table.seasons th.col-secondary, table.seasons td.col-secondary { display: none; }
+    }
   </style>
+
   <script>
-    // CloudWatch RUM client — fetches config.json synchronously in <head> so
-    // the RUM snippet can initialize before the app code runs. enableXRay=true
-    // makes the client attach an X-Amzn-Trace-Id header to outbound fetch()
-    // calls so browser spans join the backend API Gateway + Lambda trace.
+    // CloudWatch RUM client — preserved from the original frontend so browser
+    // spans continue joining the API Gateway + Lambda trace.
     (function () {
       const configPromise = fetch("/config.json").then(function (r) { return r.json(); });
       window.__appConfigPromise = configPromise;
@@ -93,17 +415,9 @@
             sessionSampleRate: 1,
             identityPoolId: cfg.rum.identityPoolId,
             endpoint: "https://dataplane.rum." + cfg.rum.region + ".amazonaws.com",
-            // The http telemetry is written as a [name, config] tuple so
-            // addXRayTraceIdHeader is set explicitly. enableXRay: true defaults
-            // it to true today, but stating it explicitly guards against future
-            // client-version regressions of that default and matches the AWS
-            // reference snippet pattern.
             telemetries: ["performance", "errors", ["http", { addXRayTraceIdHeader: true }], "interaction"],
             allowCookies: true,
             enableXRay: true,
-            // Session attributes are deploy-time injected via config.json so
-            // multiple deploys can feed the same monitor while remaining
-            // filterable in the dashboard.
             sessionAttributes: cfg.rum.sessionAttributes || {},
           }
         );
@@ -112,57 +426,416 @@
   </script>
 </head>
 <body>
-  <div class="card">
-    <h1>Hello World</h1>
-    <p class="subtitle">Serverless reference architecture &mdash; Lambda + API Gateway + CloudFront</p>
-    <button id="btn" type="button">Call API</button>
-    <div class="spinner" id="spinner" role="progressbar" aria-label="Loading"></div>
-    <div class="response" id="response" role="status" aria-live="polite"></div>
-  </div>
+  <main>
+    <!-- ── Search view ──────────────────────────────────────────────────── -->
+    <section class="view active" id="view-search">
+      <div class="hero">
+        <h1>Every player. <span class="grad">Every season.</span></h1>
+        <p class="lede">
+          Type a name to surface the career line for any of 2,551 NBA players
+          who suited up between 1996 and 2023.
+        </p>
+
+        <div class="search-shell">
+          <svg class="search-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="9" cy="9" r="6"></circle>
+            <line x1="13.5" y1="13.5" x2="17.5" y2="17.5" stroke-linecap="round"></line>
+          </svg>
+          <input
+            id="search"
+            class="search-input"
+            type="text"
+            placeholder="LeBron James, Steph Curry, Tim Duncan…"
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+            aria-label="Search players"
+            aria-controls="results"
+          />
+        </div>
+
+        <div class="results" id="results" role="listbox" aria-label="Search results"></div>
+      </div>
+    </section>
+
+    <!-- ── Detail view ──────────────────────────────────────────────────── -->
+    <section class="view" id="view-detail">
+      <div class="back" id="back" role="button" tabindex="0">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M12 4L6 10l6 6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Back to search
+      </div>
+      <div id="detail-content"></div>
+    </section>
+  </main>
 
   <script>
-    const btn      = document.getElementById("btn");
-    const spinner  = document.getElementById("spinner");
-    const response = document.getElementById("response");
+    // ──────────────────────────────────────────────────────────────────────
+    // Config + API helpers
+    // ──────────────────────────────────────────────────────────────────────
 
-    async function getApiUrl() {
-      const cfg = await (window.__appConfigPromise ?? fetch("/config.json").then((r) => r.json()));
-      return cfg.apiUrl;
+    let apiBase = null;
+    async function getApiBase() {
+      if (apiBase !== null) return apiBase;
+      const cfg = await (window.__appConfigPromise ?? fetch("/config.json").then(r => r.json()));
+      apiBase = (cfg.apiUrl || "").replace(/\/$/, "");
+      return apiBase;
     }
 
-    btn.addEventListener("click", async () => {
-      btn.disabled      = true;
-      spinner.style.display = "block";
-      response.style.display = "none";
+    async function api(path) {
+      const base = await getApiBase();
+      const res = await fetch(`${base}${path}`, {
+        // Idempotency-Key is required by the Lambda — a fresh UUID per call
+        // means each user-initiated load is treated as a distinct logical op.
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} on ${path}`);
+      return res.json();
+    }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // State
+    // ──────────────────────────────────────────────────────────────────────
+
+    /** @type {{player_id: string, player_name: string, draft_year: number|null, _lc: string}[]} */
+    let players = [];
+    let playersLoaded = false;
+    let focusedIdx = -1;
+    let lastResults = [];
+
+    const $search   = document.getElementById("search");
+    const $results  = document.getElementById("results");
+    const $viewS    = document.getElementById("view-search");
+    const $viewD    = document.getElementById("view-detail");
+    const $detail   = document.getElementById("detail-content");
+    const $back     = document.getElementById("back");
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Player list (preloaded once, filtered client-side)
+    // ──────────────────────────────────────────────────────────────────────
+
+    async function loadPlayers() {
       try {
-        const apiUrl = await getApiUrl();
-        // Idempotency-Key is required by the Lambda — Powertools' @idempotent
-        // layer keys on this header to deduplicate retries. crypto.randomUUID()
-        // gives a fresh key per click so each user-initiated call is treated
-        // as a distinct logical operation; a real client should reuse the same
-        // key across automatic retries of the same logical request instead.
-        // apiUrl from API Gateway ends in "/", so strip it before joining.
-        const base   = apiUrl.replace(/\/$/, "");
-        const res    = await fetch(`${base}/hello`, {
-          headers: { "Idempotency-Key": crypto.randomUUID() },
-        });
-        const data   = await res.json();
-
-        response.textContent      = data.message ?? JSON.stringify(data);
-        response.className        = "response success";
+        const data = await api("/players");
+        players = (data.players || []).map(p => ({
+          ...p,
+          _lc: (p.player_name || "").toLowerCase(),
+        }));
+        playersLoaded = true;
       } catch (err) {
-        response.textContent = `Error: ${err.message}`;
-        response.className   = "response error";
-        // Caught errors aren't picked up by the RUM "errors" telemetry
-        // (which hooks window.onerror / unhandledrejection), so record
-        // them explicitly so they still surface in the RUM dashboard.
+        // Surface to RUM for diagnosability; no on-page text per the
+        // minimal-UI requirement. The results dropdown stays empty if
+        // the catalog never loads — visible signal enough.
         if (window.cwr) window.cwr("recordError", err);
-      } finally {
-        btn.disabled          = false;
-        spinner.style.display = "none";
-        response.style.display = "block";
       }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Search filter — substring match on lowercased name, ranked by start-match
+    // ──────────────────────────────────────────────────────────────────────
+
+    function filterPlayers(q) {
+      const needle = q.trim().toLowerCase();
+      if (!needle) return [];
+      const starts = [];
+      const contains = [];
+      for (const p of players) {
+        const i = p._lc.indexOf(needle);
+        if (i === 0)      starts.push(p);
+        else if (i > 0)   contains.push(p);
+        if (starts.length + contains.length >= 60) break;
+      }
+      return [...starts, ...contains].slice(0, 12);
+    }
+
+    function highlightMatch(name, q) {
+      const needle = q.trim();
+      if (!needle) return escapeHtml(name);
+      const lower = name.toLowerCase();
+      const i = lower.indexOf(needle.toLowerCase());
+      if (i < 0) return escapeHtml(name);
+      return escapeHtml(name.slice(0, i))
+        + "<mark>" + escapeHtml(name.slice(i, i + needle.length)) + "</mark>"
+        + escapeHtml(name.slice(i + needle.length));
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+      ));
+    }
+
+    function initials(name) {
+      return name.split(/\s+/).map(w => w[0] || "").join("").slice(0, 2).toUpperCase();
+    }
+
+    function renderResults(q) {
+      if (!q.trim()) {
+        $results.classList.remove("open");
+        $results.innerHTML = "";
+        lastResults = [];
+        focusedIdx = -1;
+        return;
+      }
+      if (!playersLoaded) {
+        $results.innerHTML = `<div class="results-loading">Loading players…</div>`;
+        $results.classList.add("open");
+        return;
+      }
+      const matches = filterPlayers(q);
+      lastResults = matches;
+      focusedIdx = matches.length ? 0 : -1;
+      if (!matches.length) {
+        $results.innerHTML = `<div class="results-empty">No players match "${escapeHtml(q)}"</div>`;
+        $results.classList.add("open");
+        return;
+      }
+      $results.innerHTML = matches.map((p, i) => `
+        <div class="result-row${i === 0 ? " focused" : ""}" role="option" data-id="${escapeHtml(p.player_id)}" data-idx="${i}">
+          <div class="result-avatar">${initials(p.player_name)}</div>
+          <div>
+            <div class="result-name">${highlightMatch(p.player_name, q)}</div>
+            <div class="result-meta">${p.draft_year ? `Drafted ${p.draft_year}` : "Undrafted"}</div>
+          </div>
+        </div>
+      `).join("");
+      $results.classList.add("open");
+    }
+
+    function focusResult(delta) {
+      if (!lastResults.length) return;
+      focusedIdx = (focusedIdx + delta + lastResults.length) % lastResults.length;
+      [...$results.children].forEach((el, i) => {
+        el.classList.toggle("focused", i === focusedIdx);
+        if (i === focusedIdx) el.scrollIntoView({ block: "nearest" });
+      });
+    }
+
+    function openFocused() {
+      if (focusedIdx < 0 || !lastResults[focusedIdx]) return;
+      openPlayer(lastResults[focusedIdx].player_id);
+    }
+
+    $search.addEventListener("input", e => renderResults(e.target.value));
+    $search.addEventListener("keydown", e => {
+      if (e.key === "ArrowDown")      { e.preventDefault(); focusResult(1); }
+      else if (e.key === "ArrowUp")   { e.preventDefault(); focusResult(-1); }
+      else if (e.key === "Enter")     { e.preventDefault(); openFocused(); }
+      else if (e.key === "Escape")    { $search.value = ""; renderResults(""); }
+    });
+    $results.addEventListener("click", e => {
+      const row = e.target.closest(".result-row");
+      if (row) openPlayer(row.dataset.id);
+    });
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Detail view — fetched per-click, rendered fresh
+    // ──────────────────────────────────────────────────────────────────────
+
+    let currentSort = { col: "season", dir: "desc" };
+
+    async function openPlayer(playerId) {
+      window.scrollTo({ top: 0, behavior: "instant" });
+      $viewS.classList.remove("active");
+      $viewD.classList.add("active");
+      history.pushState({ playerId }, "", `#/p/${playerId}`);
+      $detail.innerHTML = `
+        <div class="detail-loading">
+          <div class="spin" aria-label="Loading"></div>
+          <div>Fetching career stats…</div>
+        </div>
+      `;
+      try {
+        const data = await api(`/players/${encodeURIComponent(playerId)}`);
+        renderDetail(data);
+      } catch (err) {
+        $detail.innerHTML = `
+          <div class="detail-loading">
+            <div style="color:#d70015">Couldn't load player: ${escapeHtml(err.message)}</div>
+          </div>
+        `;
+        if (window.cwr) window.cwr("recordError", err);
+      }
+    }
+
+    function backToSearch() {
+      $viewD.classList.remove("active");
+      $viewS.classList.add("active");
+      history.pushState({}, "", "#/");
+      $search.focus();
+    }
+    $back.addEventListener("click", backToSearch);
+    $back.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") backToSearch(); });
+
+    window.addEventListener("popstate", () => {
+      const match = location.hash.match(/^#\/p\/(.+)$/);
+      if (match) openPlayer(decodeURIComponent(match[1]));
+      else { $viewD.classList.remove("active"); $viewS.classList.add("active"); }
+    });
+
+    // ── Detail rendering ──────────────────────────────────────────────────
+
+    const fmt1 = v => v == null ? "—" : Number(v).toFixed(1);
+    const fmt3 = v => v == null ? "—" : Number(v).toFixed(3);
+    const fmtPct = v => v == null ? "—" : (Number(v) * 100).toFixed(1) + "%";
+    const fmtInt = v => v == null ? "—" : Number(v).toLocaleString();
+
+    function pillsFrom(p) {
+      const pills = [];
+      if (p.draft_year != null) {
+        const round = p.draft_round != null ? `R${p.draft_round}` : "";
+        const num   = p.draft_number != null ? `#${p.draft_number}` : "";
+        const tail  = [round, num].filter(Boolean).join(" · ");
+        pills.push(`<span class="pill">Drafted <strong>${p.draft_year}${tail ? ` · ${escapeHtml(tail)}` : ""}</strong></span>`);
+      } else {
+        pills.push(`<span class="pill">Undrafted</span>`);
+      }
+      if (p.college && p.college !== "None") pills.push(`<span class="pill">College <strong>${escapeHtml(p.college)}</strong></span>`);
+      if (p.country) pills.push(`<span class="pill">Country <strong>${escapeHtml(p.country)}</strong></span>`);
+      return pills.join("");
+    }
+
+    function careerSummary(seasons) {
+      if (!seasons.length) return "";
+      // Weight per-game averages by games played to get a true career line.
+      let totalGp = 0, ptsW = 0, rebW = 0, astW = 0;
+      let best = { pts: -Infinity, season: null };
+      let teams = new Set();
+      for (const s of seasons) {
+        const gp = s.gp ?? 0;
+        totalGp += gp;
+        if (s.pts != null) ptsW += s.pts * gp;
+        if (s.reb != null) rebW += s.reb * gp;
+        if (s.ast != null) astW += s.ast * gp;
+        if (s.pts != null && s.pts > best.pts) best = { pts: s.pts, season: s.season };
+        if (s.team_abbreviation) teams.add(s.team_abbreviation);
+      }
+      const safe = (w) => totalGp > 0 ? w / totalGp : null;
+      const firstSeason = seasons[0]?.season;
+      const lastSeason  = seasons[seasons.length - 1]?.season;
+      return `
+        <div class="career-summary">
+          <div class="stat">
+            <div class="stat-label">Seasons</div>
+            <div class="stat-value">${seasons.length}</div>
+            <div class="stat-sub">${firstSeason}${firstSeason === lastSeason ? "" : ` – ${lastSeason}`}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Career PPG</div>
+            <div class="stat-value">${fmt1(safe(ptsW))}</div>
+            <div class="stat-sub">${fmtInt(totalGp)} games</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Career RPG</div>
+            <div class="stat-value">${fmt1(safe(rebW))}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Career APG</div>
+            <div class="stat-value">${fmt1(safe(astW))}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Best PPG</div>
+            <div class="stat-value">${fmt1(best.pts === -Infinity ? null : best.pts)}</div>
+            <div class="stat-sub">${best.season ?? ""}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Teams</div>
+            <div class="stat-value">${teams.size || "—"}</div>
+            <div class="stat-sub">${[...teams].slice(0, 4).join(" · ")}${teams.size > 4 ? " …" : ""}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Columns for the season table. ``key`` indexes into the API row.
+    const COLS = [
+      { key: "season",    label: "Season",  fmt: v => v ?? "—", align: "left",  secondary: false },
+      { key: "_team",     label: "Team",    fmt: v => v ?? "—", align: "left",  secondary: false },
+      { key: "age",       label: "Age",     fmt: fmtInt,        align: "right", secondary: true  },
+      { key: "gp",        label: "GP",      fmt: fmtInt,        align: "right", secondary: false },
+      { key: "pts",       label: "PTS",     fmt: fmt1,          align: "right", secondary: false },
+      { key: "reb",       label: "REB",     fmt: fmt1,          align: "right", secondary: false },
+      { key: "ast",       label: "AST",     fmt: fmt1,          align: "right", secondary: false },
+      { key: "ts_pct",    label: "TS%",     fmt: fmtPct,        align: "right", secondary: true  },
+      { key: "usg_pct",   label: "USG%",    fmt: fmtPct,        align: "right", secondary: true  },
+      { key: "net_rating",label: "Net Rtg", fmt: fmt1,          align: "right", secondary: true  },
+    ];
+
+    function sortSeasons(seasons) {
+      const { col, dir } = currentSort;
+      const sign = dir === "asc" ? 1 : -1;
+      return [...seasons].sort((a, b) => {
+        const av = col === "_team" ? a.team_abbreviation : a[col];
+        const bv = col === "_team" ? b.team_abbreviation : b[col];
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        if (typeof av === "string") return av.localeCompare(bv) * sign;
+        return (av - bv) * sign;
+      });
+    }
+
+    function renderDetail(data) {
+      const seasons = sortSeasons(data.seasons || []);
+      $detail.innerHTML = `
+        <div class="player-hero">
+          <h2>${escapeHtml(data.player_name)}</h2>
+          <div class="player-meta">${pillsFrom(data)}</div>
+          ${careerSummary(data.seasons || [])}
+        </div>
+        <div class="seasons-card">
+          <div class="seasons-card-head">
+            <h3>Season by season</h3>
+            <div class="count">${seasons.length} ${seasons.length === 1 ? "season" : "seasons"}</div>
+          </div>
+          <table class="seasons">
+            <thead>
+              <tr>
+                ${COLS.map(c => `
+                  <th class="${c.secondary ? "col-secondary " : ""}${currentSort.col === c.key ? "sorted" : ""}" data-key="${c.key}">
+                    ${escapeHtml(c.label)}<span class="arrow">${currentSort.col === c.key ? (currentSort.dir === "asc" ? "▲" : "▼") : ""}</span>
+                  </th>
+                `).join("")}
+              </tr>
+            </thead>
+            <tbody>
+              ${seasons.map(s => `
+                <tr>
+                  ${COLS.map(c => {
+                    const val = c.key === "_team" ? s.team_abbreviation : s[c.key];
+                    if (c.key === "_team") {
+                      return `<td class="col-secondary-no"><span class="team-tag">${escapeHtml(val ?? "—")}</span></td>`.replace("col-secondary-no", "");
+                    }
+                    return `<td class="${c.secondary ? "col-secondary" : ""}">${escapeHtml(c.fmt(val))}</td>`;
+                  }).join("")}
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+
+      // Sort handlers — clicking a header toggles direction (or sets new column)
+      $detail.querySelectorAll("thead th").forEach(th => {
+        th.addEventListener("click", () => {
+          const key = th.dataset.key;
+          if (currentSort.col === key) currentSort.dir = currentSort.dir === "asc" ? "desc" : "asc";
+          else { currentSort.col = key; currentSort.dir = key === "season" ? "desc" : "desc"; }
+          renderDetail(data);
+        });
+      });
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Boot
+    // ──────────────────────────────────────────────────────────────────────
+
+    loadPlayers().then(() => {
+      // Deep-link support — opening /#/p/<id> jumps straight to the detail view.
+      const match = location.hash.match(/^#\/p\/(.+)$/);
+      if (match) openPlayer(decodeURIComponent(match[1]));
+      else $search.focus();
     });
   </script>
 </body>

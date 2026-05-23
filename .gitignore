@@ -1,4 +1,11 @@
 
+# Auxiliary NBA datasets unused by the importer — keep out of the repo (~1.4 GB).
+# Only data/NBA_Player_Data.csv is consumed by lambda_importer; the rest of
+# data/ is local-only scratch from upstream sources.
+data/csv/
+data/pbp/
+data/Description_Of_Data.txt
+
 # Created by https://www.gitignore.io/api/osx,linux,python,windows,pycharm,visualstudiocode
 
 ### Linux ###

@@ -14,6 +14,7 @@ from the Google-style docstrings in the source via
 [mkdocstrings](https://mkdocstrings.github.io/):
 
 - [Lambda handler](lambda_handler.md) — the Powertools route handler, Pydantic models, and cross-cutting concerns.
+- [DynamoDB schema](dynamodb_schema.md) — NBA player table layout, GSIs, access patterns, and importer contract.
 - [Backend application construct](hello_world_app.md) — `HelloWorldApp`: the domain construct that owns every backend resource.
 - [Backend stack](cdk_stack.md) — thin wrapper composing `HelloWorldApp` and attaching stack-level cdk-nag suppressions.
 - [WAF stack](hello_world_waf_stack.md) — us-east-1 WebACL attached to CloudFront.

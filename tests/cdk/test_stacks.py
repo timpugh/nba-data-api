@@ -168,8 +168,31 @@ class TestBackendStack:
         backend_template.has_output("HelloWorldApiOutput", {})
         backend_template.has_output("HelloWorldFunctionOutput", {})
         backend_template.has_output("IdempotencyTableName", {})
+        backend_template.has_output("NbaPlayerTableName", {})
         backend_template.has_output("GreetingParameterName", {})
         backend_template.has_output("CloudWatchDashboardUrl", {})
+
+    def test_nba_player_table_has_two_gsis(self, backend_template: Template) -> None:
+        # NbaPlayerTable carries two GSIs (team-season + season/players-all);
+        # changing or dropping one would break the documented access patterns
+        # in docs/dynamodb_schema.md. Match by index names so the test fails
+        # loudly on rename.
+        backend_template.has_resource_properties(
+            "AWS::DynamoDB::Table",
+            {
+                "GlobalSecondaryIndexes": Match.array_with(
+                    [
+                        Match.object_like({"IndexName": "gsi1-team-season"}),
+                        Match.object_like({"IndexName": "gsi2-by-season"}),
+                    ]
+                ),
+            },
+        )
+
+    def test_two_dynamodb_tables(self, backend_template: Template) -> None:
+        # IdempotencyTable + NbaPlayerTable. Locks the table count so an
+        # accidental third table addition (or removal of one) is caught.
+        backend_template.resource_count_is("AWS::DynamoDB::Table", 2)
 
 
 # ── Frontend stack ────────────────────────────────────────────────────────────

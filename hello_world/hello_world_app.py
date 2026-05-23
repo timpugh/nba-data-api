@@ -16,6 +16,7 @@ from typing import cast
 
 from aws_cdk import (
     Duration,
+    Fn,
     RemovalPolicy,
     Stack,
 )
@@ -45,6 +46,9 @@ from aws_cdk import (
 )
 from aws_cdk import (
     aws_resourcegroups as rg,
+)
+from aws_cdk import (
+    aws_s3_assets as s3_assets,
 )
 from aws_cdk import (
     aws_ssm as ssm,
@@ -131,6 +135,39 @@ class HelloWorldApp(Construct):
             point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
                 point_in_time_recovery_enabled=True,
             ),
+        )
+
+        # NBA player-data table.
+        # Single-table design with two GSIs. Schema and access patterns
+        # documented in docs/dynamodb_schema.md — read that first before
+        # changing any key attribute.
+        self.nba_player_table = dynamodb.Table(
+            self,
+            "NbaPlayerTable",
+            partition_key=dynamodb.Attribute(name="PK", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="SK", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            encryption=dynamodb.TableEncryption.CUSTOMER_MANAGED,
+            encryption_key=self.encryption_key,
+            contributor_insights_enabled=True,
+            removal_policy=RemovalPolicy.DESTROY,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True,
+            ),
+        )
+        # GSI1 — team roster for a given season. Partition is ~15 players.
+        self.nba_player_table.add_global_secondary_index(
+            index_name="gsi1-team-season",
+            partition_key=dynamodb.Attribute(name="GSI1PK", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="GSI1SK", type=dynamodb.AttributeType.STRING),
+        )
+        # GSI2 — overloaded: SEASON#<yyyy-yy> for per-season scans, plus
+        # PLAYERS#ALL for alphabetical paginated player listing on the sparse
+        # profile rows. Both partitions are well under DDB single-partition limits.
+        self.nba_player_table.add_global_secondary_index(
+            index_name="gsi2-by-season",
+            partition_key=dynamodb.Attribute(name="GSI2PK", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="GSI2SK", type=dynamodb.AttributeType.STRING),
         )
 
         # SSM parameter for Powertools Parameters.
@@ -220,6 +257,7 @@ class HelloWorldApp(Construct):
                 "POWERTOOLS_METRICS_NAMESPACE": "HelloWorld",
                 "POWERTOOLS_LOG_LEVEL": "INFO",
                 "IDEMPOTENCY_TABLE_NAME": self.idempotency_table.table_name,
+                "NBA_TABLE_NAME": self.nba_player_table.table_name,
                 "GREETING_PARAM_NAME": self.greeting_param.parameter_name,
                 # Sourcing AppConfig identifiers from the CFN constructs (instead
                 # of re-formatting f"{stack.stack_name}-...") keeps the Lambda's
@@ -239,6 +277,24 @@ class HelloWorldApp(Construct):
 
         # Grant permissions
         self.idempotency_table.grant_read_write_data(self.function)
+        # Read-only on the NBA table — handler queries profile + season items
+        # by PK and via the two named GSIs. Resources are listed explicitly
+        # (no /index/* wildcard) so cdk-nag passes without an IAM5 suppression.
+        self.function.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "dynamodb:GetItem",
+                    "dynamodb:BatchGetItem",
+                    "dynamodb:Query",
+                    "dynamodb:DescribeTable",
+                ],
+                resources=[
+                    self.nba_player_table.table_arn,
+                    f"{self.nba_player_table.table_arn}/index/gsi1-team-season",
+                    f"{self.nba_player_table.table_arn}/index/gsi2-by-season",
+                ],
+            )
+        )
         self.greeting_param.grant_read(self.function)
 
         # AppConfig least-privilege: both calls authorize against the
@@ -316,6 +372,25 @@ class HelloWorldApp(Construct):
         hello_resource = self.api.root.add_resource("hello")
         hello_resource.add_method("GET", apigw.LambdaIntegration(self.function))
         hello_resource.add_cors_preflight(
+            allow_origins=apigw.Cors.ALL_ORIGINS,
+            allow_methods=["GET", "OPTIONS"],
+            allow_headers=[*apigw.Cors.DEFAULT_HEADERS, "X-Amzn-Trace-Id", "Idempotency-Key"],
+        )
+
+        # NBA routes — /players (list) and /players/{id} (one player with all
+        # seasons). The lambda_handler still wraps every request in @idempotent,
+        # so the Idempotency-Key header is required on both. Relaxing the gate
+        # for GET-only routes is a separate refactor.
+        players_resource = self.api.root.add_resource("players")
+        players_resource.add_method("GET", apigw.LambdaIntegration(self.function))
+        players_resource.add_cors_preflight(
+            allow_origins=apigw.Cors.ALL_ORIGINS,
+            allow_methods=["GET", "OPTIONS"],
+            allow_headers=[*apigw.Cors.DEFAULT_HEADERS, "X-Amzn-Trace-Id", "Idempotency-Key"],
+        )
+        player_resource = players_resource.add_resource("{id}")
+        player_resource.add_method("GET", apigw.LambdaIntegration(self.function))
+        player_resource.add_cors_preflight(
             allow_origins=apigw.Cors.ALL_ORIGINS,
             allow_methods=["GET", "OPTIONS"],
             # X-Amzn-Trace-Id is required for CloudWatch RUM to propagate the
@@ -399,6 +474,11 @@ class HelloWorldApp(Construct):
         # Must run after Application Insights has had a chance to create the dashboard
         app_insights_dashboard_cleanup.node.add_dependency(app_insights)
 
+        # NBA importer subsystem — CSV S3 asset, importer Lambda, and the CR
+        # trigger that invokes it on stack create / asset-or-code change.
+        # Extracted into a helper to keep __init__ under pylint's R0915 ceiling.
+        nba_importer_function = self._setup_nba_importer_subsystem(custom_resource_log_group)
+
         # Monitoring dashboard via cdk-monitoring-constructs
         # CloudWatch dashboards are global — scope the name to the stack so
         # multiple regional deployments don't collide on the same dashboard name.
@@ -416,13 +496,271 @@ class HelloWorldApp(Construct):
             ),
         )
         monitoring.monitor_lambda_function(lambda_function=self.function)
+        monitoring.monitor_lambda_function(lambda_function=nba_importer_function)
         monitoring.monitor_api_gateway(api=self.api)
         monitoring.monitor_dynamo_table(table=self.idempotency_table)
+        monitoring.monitor_dynamo_table(table=self.nba_player_table)
 
         # Expose API URL for consumption by the enclosing stack and cross-stack refs
         self.api_url = self.api.url
 
         self._add_resource_suppressions(app_insights_dashboard_cleanup)
+
+    def _setup_nba_importer_subsystem(
+        self,
+        custom_resource_log_group: logs.LogGroup,
+    ) -> PythonFunction:
+        """Provision the NBA importer Lambda + S3 asset + CR trigger.
+
+        Returns the importer Lambda function so the caller can wire it into
+        the MonitoringFacade. Schema and the importer's idempotency contract
+        are documented in docs/dynamodb_schema.md.
+
+        The trigger payload embeds both the CSV asset hash and the importer's
+        Lambda code asset S3 key so a CSV edit or a code edit auto-re-fires
+        the import on next deploy (CFN tracks CR properties by string equality).
+        Fn.sub is required because the Lambda code's S3 key is a deploy-time
+        CDK token, not a synth-time string.
+        """
+        csv_asset = s3_assets.Asset(
+            self,
+            "NbaCsvAsset",
+            path="data/NBA_Player_Data.csv",
+        )
+
+        importer_log_group = logs.LogGroup(
+            self,
+            "NbaImporterFunctionLogGroup",
+            encryption_key=self.encryption_key,
+            retention=logs.RetentionDays.ONE_WEEK,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
+        importer_function = PythonFunction(
+            self,
+            "NbaImporterFunction",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            entry="lambda_importer",
+            index="app.py",
+            handler="handler",
+            architecture=_lambda.Architecture.ARM_64,
+            memory_size=512,
+            # 5 min covers parse + 514 batches of BatchWriteItem with margin
+            # for retries; on-demand DDB easily absorbs the burst.
+            timeout=Duration.minutes(5),
+            tracing=_lambda.Tracing.ACTIVE,
+            log_group=importer_log_group,
+            logging_format=_lambda.LoggingFormat.JSON,
+            environment_encryption=self.encryption_key,
+            environment={
+                "NBA_TABLE_NAME": self.nba_player_table.table_name,
+                "CSV_S3_BUCKET": csv_asset.s3_bucket_name,
+                "CSV_S3_KEY": csv_asset.s3_object_key,
+            },
+        )
+        cast(_lambda.CfnFunction, importer_function.node.default_child).recursive_loop = "Terminate"
+
+        # S3 read on the staged CSV (KMS handled by the staging bucket's
+        # AWS-managed key). DDB writes scoped to the base table ARN only —
+        # BatchWriteItem propagates to GSIs internally, no /index/* needed.
+        # KMS Encrypt+Decrypt+DataKey on the table CMK granted explicitly
+        # because the hand-rolled DDB policy below skips the implicit KMS
+        # statements that table.grant_write_data would have added.
+        csv_asset.grant_read(importer_function)
+        importer_function.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["dynamodb:BatchWriteItem", "dynamodb:PutItem", "dynamodb:DescribeTable"],
+                resources=[self.nba_player_table.table_arn],
+            )
+        )
+        self.encryption_key.grant_encrypt_decrypt(importer_function)
+
+        # CfnFunction.code is typed as IResolvable | CodeProperty; for
+        # asset-backed functions it's always CodeProperty (with s3_key set).
+        # Cast through the union so mypy can see the s3_key attribute.
+        importer_code_s3_key = cast(
+            _lambda.CfnFunction.CodeProperty,
+            cast(_lambda.CfnFunction, importer_function.node.default_child).code,
+        ).s3_key
+        on_create_payload = Fn.sub(
+            '{"RequestType":"Create","CsvHash":"${csv}","CodeKey":"${code}"}',
+            {"csv": csv_asset.asset_hash, "code": cast(str, importer_code_s3_key)},
+        )
+        on_update_payload = Fn.sub(
+            '{"RequestType":"Update","CsvHash":"${csv}","CodeKey":"${code}"}',
+            {"csv": csv_asset.asset_hash, "code": cast(str, importer_code_s3_key)},
+        )
+        importer_trigger = cr.AwsCustomResource(
+            self,
+            "NbaImporterTrigger",
+            on_create=cr.AwsSdkCall(
+                service="Lambda",
+                action="invoke",
+                parameters={
+                    "FunctionName": importer_function.function_name,
+                    "InvocationType": "RequestResponse",
+                    "Payload": on_create_payload,
+                },
+                physical_resource_id=cr.PhysicalResourceId.of("nba-importer"),
+            ),
+            on_update=cr.AwsSdkCall(
+                service="Lambda",
+                action="invoke",
+                parameters={
+                    "FunctionName": importer_function.function_name,
+                    "InvocationType": "RequestResponse",
+                    "Payload": on_update_payload,
+                },
+                physical_resource_id=cr.PhysicalResourceId.of("nba-importer"),
+            ),
+            # from_sdk_calls derives "lambda:Invoke" from the SDK method name,
+            # but the real IAM action is "lambda:InvokeFunction" — pinned
+            # explicitly to avoid that mismatch.
+            policy=cr.AwsCustomResourcePolicy.from_statements(
+                [
+                    iam.PolicyStatement(
+                        actions=["lambda:InvokeFunction"],
+                        resources=[importer_function.function_arn],
+                    ),
+                ]
+            ),
+            timeout=Duration.minutes(10),
+            install_latest_aws_sdk=False,
+            log_group=custom_resource_log_group,
+        )
+
+        self._add_nba_resource_suppressions(importer_function, importer_trigger)
+        return importer_function
+
+    def _add_nba_resource_suppressions(
+        self,
+        importer_function: PythonFunction,
+        importer_trigger: cr.AwsCustomResource,
+    ) -> None:
+        """Per-resource cdk-nag suppressions for the NBA importer + trigger.
+
+        Mirrors the main Lambda suppressions: Python 3.13 (cdk-nag rule lag),
+        no DLQ (custom-resource invoke is synchronous), no VPC, no concurrency
+        limits, the standard KMS wildcard-action pair, and the CDK-managed
+        inline policy. The DDB write statement is resource-scoped to the
+        base table ARN so no IAM5 wildcard suppression is needed there.
+        """
+        NagSuppressions.add_resource_suppressions(
+            importer_function,
+            [
+                {
+                    "id": "AwsSolutions-L1",
+                    "reason": "Python 3.13 is the latest Lambda runtime — cdk-nag rule not yet updated",
+                },
+                {
+                    "id": "Serverless-LambdaLatestVersion",
+                    "reason": "Python 3.13 is the latest Lambda runtime — cdk-nag rule not yet updated",
+                },
+                {
+                    "id": "Serverless-LambdaDLQ",
+                    "reason": (
+                        "Invoked synchronously by AwsCustomResource on stack create/update — "
+                        "the CR provider Lambda already has an async failure destination "
+                        "(AwsCustomResourceProviderDlq); adding a DLQ on this importer "
+                        "duplicates the failure surface."
+                    ),
+                },
+                {
+                    "id": "NIST.800.53.R5-LambdaDLQ",
+                    "reason": "Invoked synchronously by AwsCustomResource — see Serverless-LambdaDLQ rationale",
+                },
+                {
+                    "id": "HIPAA.Security-LambdaDLQ",
+                    "reason": "Invoked synchronously by AwsCustomResource — see Serverless-LambdaDLQ rationale",
+                },
+                {
+                    "id": "NIST.800.53.R5-LambdaConcurrency",
+                    "reason": "One-shot importer triggered by CFN — concurrency limits not applicable",
+                },
+                {
+                    "id": "HIPAA.Security-LambdaConcurrency",
+                    "reason": "One-shot importer triggered by CFN — concurrency limits not applicable",
+                },
+                {
+                    "id": "NIST.800.53.R5-LambdaInsideVPC",
+                    "reason": "No VPC — adds significant operational complexity",
+                },
+                {
+                    "id": "HIPAA.Security-LambdaInsideVPC",
+                    "reason": "No VPC — adds significant operational complexity",
+                },
+                {
+                    "id": "PCI.DSS.321-LambdaInsideVPC",
+                    "reason": "No VPC — adds significant operational complexity",
+                },
+                {
+                    "id": "AwsSolutions-IAM4",
+                    "reason": "AWSLambdaBasicExecutionRole is the minimal managed policy for Lambda execution",
+                    "applies_to": [
+                        "Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+                    ],
+                },
+                {
+                    "id": "AwsSolutions-IAM5",
+                    "reason": (
+                        "kms:GenerateDataKey* and kms:ReEncrypt* require wildcard action "
+                        "suffix — standard KMS usage pattern"
+                    ),
+                    "applies_to": ["Action::kms:GenerateDataKey*", "Action::kms:ReEncrypt*"],
+                },
+                {
+                    "id": "AwsSolutions-IAM5",
+                    "reason": (
+                        "X-Ray segments have no resource-level ARN — wildcard is required "
+                        "for the X-Ray write statement only"
+                    ),
+                    "applies_to": ["Resource::*"],
+                },
+                {
+                    "id": "AwsSolutions-IAM5",
+                    "reason": (
+                        "CDK staging bucket asset key has a content-hash prefix that is "
+                        "not known at synth time; s3:GetObject is scoped to "
+                        "<asset-bucket-arn>/* but only the bucket ARN is fixed"
+                    ),
+                    "applies_to": ["Resource::*"],
+                },
+                {
+                    "id": "NIST.800.53.R5-IAMNoInlinePolicy",
+                    "reason": "CDK generates the default policy inline on the Lambda service role — not directly configurable",
+                },
+                {
+                    "id": "HIPAA.Security-IAMNoInlinePolicy",
+                    "reason": "CDK generates the default policy inline on the Lambda service role — not directly configurable",
+                },
+                {
+                    "id": "PCI.DSS.321-IAMNoInlinePolicy",
+                    "reason": "CDK generates the default policy inline on the Lambda service role — not directly configurable",
+                },
+            ],
+            apply_to_children=True,
+        )
+
+        # AwsCustomResource trigger uses the same inline-policy pattern as
+        # AppInsightsDashboardCleanup. Policy is scoped to one Lambda ARN.
+        NagSuppressions.add_resource_suppressions(
+            importer_trigger,
+            [
+                {
+                    "id": "NIST.800.53.R5-IAMNoInlinePolicy",
+                    "reason": "AwsCustomResource generates an inline policy — not directly configurable",
+                },
+                {
+                    "id": "HIPAA.Security-IAMNoInlinePolicy",
+                    "reason": "AwsCustomResource generates an inline policy — not directly configurable",
+                },
+                {
+                    "id": "PCI.DSS.321-IAMNoInlinePolicy",
+                    "reason": "AwsCustomResource generates an inline policy — not directly configurable",
+                },
+            ],
+            apply_to_children=True,
+        )
 
     def _add_resource_suppressions(self, app_insights_dashboard_cleanup: cr.AwsCustomResource) -> None:
         """Attach per-resource cdk-nag suppressions for resources owned by this construct.

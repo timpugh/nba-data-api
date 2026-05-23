@@ -1,6 +1,7 @@
 """Unit tests for the Lambda handler."""
 
 import json
+from decimal import Decimal
 
 import pytest
 
@@ -157,6 +158,184 @@ def test_require_env_raises_when_missing(lambda_app_module, monkeypatch):
 
     with pytest.raises(RuntimeError, match="UNIT_TEST_ABSENT_VAR"):
         lambda_app_module._require_env("UNIT_TEST_ABSENT_VAR")
+
+
+@pytest.fixture
+def player_event(apigw_event):
+    """GET /players/{id} variant of the API Gateway event fixture."""
+    event = dict(apigw_event)
+    event["resource"] = "/players/{id}"
+    event["path"] = "/players/abc-123"
+    event["pathParameters"] = {"id": "abc-123"}
+    return event
+
+
+def test_get_player_returns_profile_with_seasons(player_event, lambda_context, lambda_app_module, mocker):
+    """A player_id with one profile and N season rows returns 200 with all seasons sorted oldest-first.
+
+    Decimal -> float coercion is exercised on numeric attrs; None values fall
+    through untouched. Profile row's optional fields (college, country, draft_*)
+    are populated to lock in their happy-path mapping.
+    """
+    mocker.patch.object(
+        lambda_app_module._nba_table,
+        "query",
+        return_value={
+            "Items": [
+                {
+                    "PK": "PLAYER#abc-123",
+                    "SK": "PROFILE",
+                    "player_id": "abc-123",
+                    "player_name": "Test Player",
+                    "college": "State U",
+                    "country": "USA",
+                    "draft_year": 2010,
+                    "draft_round": 1,
+                    "draft_number": 5,
+                },
+                {
+                    "PK": "PLAYER#abc-123",
+                    "SK": "SEASON#2011-12",
+                    "season": "2011-12",
+                    "team_abbreviation": "BOS",
+                    "age": 22,
+                    "player_height_cm": Decimal("198.12"),
+                    "player_weight_kg": Decimal("95.5"),
+                    "gp": 70,
+                    "pts": Decimal("12.4"),
+                    "reb": Decimal("4.1"),
+                    "ast": Decimal("3.0"),
+                    "net_rating": Decimal("-1.2"),
+                    "oreb_pct": Decimal("0.03"),
+                    "dreb_pct": Decimal("0.12"),
+                    "usg_pct": Decimal("0.21"),
+                    "ts_pct": Decimal("0.55"),
+                    "ast_pct": Decimal("0.18"),
+                },
+                {
+                    "PK": "PLAYER#abc-123",
+                    "SK": "SEASON#2010-11",
+                    "season": "2010-11",
+                    "team_abbreviation": "BOS",
+                    "age": 21,
+                    "gp": 65,
+                    # All optional metrics omitted -> _to_float receives None
+                },
+            ],
+        },
+    )
+
+    ret = lambda_app_module.lambda_handler(player_event, lambda_context)
+    body = json.loads(ret["body"])
+
+    assert ret["statusCode"] == 200
+    assert body["player_id"] == "abc-123"
+    assert body["player_name"] == "Test Player"
+    assert body["college"] == "State U"
+    assert body["draft_number"] == 5
+    # Oldest-first ordering by SK
+    assert [s["season"] for s in body["seasons"]] == ["2010-11", "2011-12"]
+    # Decimal -> float conversion landed
+    assert body["seasons"][1]["pts"] == pytest.approx(12.4)
+    # None values pass through
+    assert body["seasons"][0]["pts"] is None
+    assert body["seasons"][0]["player_height_cm"] is None
+
+
+def test_get_player_returns_404_when_no_profile(player_event, lambda_context, lambda_app_module, mocker):
+    """Query returns rows but no PROFILE sentinel -> 404 (the profile is the only mandatory row)."""
+    mocker.patch.object(
+        lambda_app_module._nba_table,
+        "query",
+        return_value={"Items": []},
+    )
+
+    ret = lambda_app_module.lambda_handler(player_event, lambda_context)
+
+    assert ret["statusCode"] == 404
+
+
+def test_get_player_returns_500_on_ddb_error(player_event, lambda_context, lambda_app_module, mocker):
+    """A boto3 exception from the table.query call surfaces as a 500.
+
+    The handler catches the broad ``Exception`` only so it can re-raise as
+    InternalServerError after logging; truly fatal errors elsewhere in the
+    request lifecycle still propagate to the Powertools default handler.
+    """
+    mocker.patch.object(
+        lambda_app_module._nba_table,
+        "query",
+        side_effect=RuntimeError("DDB exploded"),
+    )
+
+    ret = lambda_app_module.lambda_handler(player_event, lambda_context)
+
+    assert ret["statusCode"] == 500
+
+
+def test_to_float_passes_through_non_decimal(lambda_app_module):
+    """_to_float accepts an already-float input (defensive against caller drift)."""
+    assert lambda_app_module._to_float(3.5) == pytest.approx(3.5)
+    assert lambda_app_module._to_float(None) is None
+
+
+@pytest.fixture
+def list_players_event(apigw_event):
+    """GET /players variant of the API Gateway event fixture."""
+    event = dict(apigw_event)
+    event["resource"] = "/players"
+    event["path"] = "/players"
+    event["pathParameters"] = None
+    return event
+
+
+def test_list_players_paginates_and_returns_all(list_players_event, lambda_context, lambda_app_module, mocker):
+    """list_players exhausts LastEvaluatedKey pagination and returns the union.
+
+    The dataset can grow past DynamoDB's 1 MB Query page limit; the handler
+    must loop. Mocked to return two pages so the pagination loop is actually
+    exercised (one-page returns would hide a bug where the second page is
+    never requested).
+    """
+    page1 = {
+        "Items": [
+            {"player_id": "id-1", "player_name": "Alpha Player", "draft_year": 2001},
+            {"player_id": "id-2", "player_name": "Beta Player", "draft_year": 2002},
+        ],
+        "LastEvaluatedKey": {"PK": "PLAYER#id-2", "SK": "PROFILE"},
+    }
+    page2 = {
+        "Items": [
+            {"player_id": "id-3", "player_name": "Gamma Player", "draft_year": None},
+        ],
+    }
+    mocker.patch.object(
+        lambda_app_module._nba_table,
+        "query",
+        side_effect=[page1, page2],
+    )
+
+    ret = lambda_app_module.lambda_handler(list_players_event, lambda_context)
+    body = json.loads(ret["body"])
+
+    assert ret["statusCode"] == 200
+    assert body["count"] == 3
+    assert [p["player_id"] for p in body["players"]] == ["id-1", "id-2", "id-3"]
+    # draft_year is optional — None should serialize as null, not be dropped
+    assert body["players"][2]["draft_year"] is None
+
+
+def test_list_players_returns_500_on_ddb_error(list_players_event, lambda_context, lambda_app_module, mocker):
+    """A DynamoDB failure during paginated list surfaces as 500, not as a partial result."""
+    mocker.patch.object(
+        lambda_app_module._nba_table,
+        "query",
+        side_effect=RuntimeError("DDB unavailable"),
+    )
+
+    ret = lambda_app_module.lambda_handler(list_players_event, lambda_context)
+
+    assert ret["statusCode"] == 500
 
 
 def test_persistence_layer_error_propagates(apigw_event, lambda_context, lambda_app_module, monkeypatch, mocker):

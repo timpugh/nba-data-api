@@ -222,6 +222,7 @@ env = [
     "POWERTOOLS_METRICS_NAMESPACE=HelloWorld",
     "POWERTOOLS_LOG_LEVEL=INFO",
     "IDEMPOTENCY_TABLE_NAME=test-idempotency",
+    "NBA_TABLE_NAME=test-nba-players",
     "GREETING_PARAM_NAME=/test/greeting",
     "APPCONFIG_APP_NAME=test-app",
     "APPCONFIG_ENV_NAME=HelloWorld-test-env",

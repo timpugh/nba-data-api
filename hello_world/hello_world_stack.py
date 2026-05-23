@@ -66,6 +66,12 @@ class HelloWorldStack(Stack):
         )
         CfnOutput(
             self,
+            "NbaPlayerTableName",
+            description="DynamoDB table holding NBA player profiles and season stats",
+            value=self.app.nba_player_table.table_name,
+        )
+        CfnOutput(
+            self,
             "GreetingParameterName",
             description="SSM parameter name for the greeting message",
             value=self.app.greeting_param.parameter_name,
