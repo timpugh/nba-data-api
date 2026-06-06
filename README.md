@@ -9,7 +9,7 @@ player stats (1996–97 → 2022–23). Type a name, get the player's full caree
 line — every season, every team. Built on AWS Lambda, API Gateway, DynamoDB,
 S3, and CloudFront, deployed via the AWS CDK.
 
-**Live demo:** [https://d222u5c44dorfm.cloudfront.net/](https://d222u5c44dorfm.cloudfront.net/)
+**Live demo:** [https://removed.cloudfront.net/](https://removed.cloudfront.net/)
 
 ---
 
